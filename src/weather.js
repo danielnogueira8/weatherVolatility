@@ -1,0 +1,347 @@
+/**
+ * Weather Polling Service
+ * Fetches weather data and processes temperature changes
+ */
+
+import axios from 'axios';
+import moment from 'moment-timezone';
+import { locations, API_BASE_URL } from '../config/locations.js';
+import { loadLocationState, saveLocationState, cleanupOldStateFiles } from './state.js';
+import { broadcastMessage, sendMessage, setStatusHandler } from './telegram.js';
+
+// Store for current readings (for /status command)
+const currentReadings = new Map();
+
+/**
+ * Get the current date string for a location in its timezone
+ */
+function getLocalDate(timezone) {
+  return moment().tz(timezone).format('YYYY-MM-DD');
+}
+
+/**
+ * Get the current time string for a location in its timezone
+ */
+function getLocalTime(timezone) {
+  return moment().tz(timezone).format('h:mm A');
+}
+
+/**
+ * Fetch weather data for a location
+ * Handles timezone edge cases where local date might be "future" for the API
+ */
+async function fetchWeatherData(location) {
+  const localDate = getLocalDate(location.timezone);
+  const url = `${API_BASE_URL}?location=${location.apiPath}&date=${localDate}`;
+  
+  try {
+    const response = await axios.get(url, { timeout: 10000 });
+    return {
+      success: true,
+      data: response.data,
+      localDate
+    };
+  } catch (err) {
+    // If the API says date is in the future, try yesterday's date
+    if (err.response?.status === 400) {
+      const responseData = err.response?.data;
+      const isFutureDateError = responseData?.error?.details?.some(
+        d => d.message?.includes('future')
+      );
+      
+      if (isFutureDateError) {
+        // Try with yesterday's date (API might not have today's data yet)
+        const yesterdayDate = moment().tz(location.timezone).subtract(1, 'day').format('YYYY-MM-DD');
+        const fallbackUrl = `${API_BASE_URL}?location=${location.apiPath}&date=${yesterdayDate}`;
+        
+        try {
+          console.log(`⏰ ${location.name}: Local date ${localDate} is future for API, using ${yesterdayDate}`);
+          const fallbackResponse = await axios.get(fallbackUrl, { timeout: 10000 });
+          return {
+            success: true,
+            data: fallbackResponse.data,
+            localDate: yesterdayDate,
+            isFallback: true
+          };
+        } catch (fallbackErr) {
+          console.error(`❌ Error fetching ${location.name} (fallback):`, fallbackErr.message);
+        }
+      }
+    }
+    
+    console.error(`❌ Error fetching ${location.name}:`, err.message);
+    return {
+      success: false,
+      error: err.message,
+      localDate
+    };
+  }
+}
+
+/**
+ * Extract current temperature from API response
+ * API structure: { success: true, data: { current: { temperature: { celsius: X } } } }
+ */
+function extractCurrentTemp(apiResponse) {
+  // The API wraps everything in { success, data }
+  const data = apiResponse?.data || apiResponse;
+  
+  // Primary path: data.current.temperature.celsius
+  if (typeof data?.current?.temperature?.celsius === 'number') {
+    return data.current.temperature.celsius;
+  }
+  
+  // Fallback: check for hourly_data and get the latest
+  if (data?.hourly_data && Array.isArray(data.hourly_data) && data.hourly_data.length > 0) {
+    const latest = data.hourly_data[data.hourly_data.length - 1];
+    if (typeof latest?.temperature_c === 'number') {
+      return latest.temperature_c;
+    }
+  }
+  
+  // Other fallbacks
+  if (typeof data?.temperature?.celsius === 'number') return data.temperature.celsius;
+  if (typeof data?.temp === 'number') return data.temp;
+  
+  return null;
+}
+
+/**
+ * Process temperature data for a location and generate alerts
+ */
+async function processLocation(location) {
+  const result = await fetchWeatherData(location);
+  
+  if (!result.success) {
+    return null;
+  }
+  
+  const currentTemp = extractCurrentTemp(result.data);
+  
+  if (currentTemp === null) {
+    console.log(`⚠️ Could not extract temperature for ${location.name}`);
+    return null;
+  }
+  
+  const localDate = result.localDate;
+  const localTime = getLocalTime(location.timezone);
+  const state = loadLocationState(location.id, localDate);
+  
+  // Store for /status command
+  currentReadings.set(location.id, {
+    temp: currentTemp,
+    time: localTime,
+    date: localDate,
+    high: state.highTemp
+  });
+  
+  const alerts = [];
+  
+  // First reading of the day - establish baseline silently
+  if (state.highTemp === null) {
+    state.highTemp = currentTemp;
+    state.lastTemp = currentTemp;
+    state.hasAlertedDrop = false;
+    state.history.push({ temp: currentTemp, time: localTime });
+    saveLocationState(location.id, localDate, state);
+    
+    console.log(`📊 ${location.emoji} ${location.name}: Baseline set at ${currentTemp}°C`);
+    return null;
+  }
+  
+  // Check for new high
+  if (currentTemp > state.highTemp) {
+    const prevHigh = state.highTemp;
+    state.highTemp = currentTemp;
+    state.hasAlertedDrop = false; // Reset drop alert flag for new high
+    
+    alerts.push({
+      type: 'new_high',
+      location,
+      temp: currentTemp,
+      prevHigh,
+      time: localTime,
+      date: localDate
+    });
+    
+    console.log(`📈 ${location.emoji} ${location.name}: NEW HIGH ${currentTemp}°C (prev: ${prevHigh}°C)`);
+  }
+  // Check for first drop from high
+  else if (currentTemp < state.highTemp && !state.hasAlertedDrop) {
+    state.hasAlertedDrop = true;
+    
+    alerts.push({
+      type: 'drop',
+      location,
+      temp: currentTemp,
+      high: state.highTemp,
+      time: localTime,
+      date: localDate
+    });
+    
+    console.log(`📉 ${location.emoji} ${location.name}: DROPPED to ${currentTemp}°C (high was: ${state.highTemp}°C)`);
+  }
+  
+  // Update state
+  state.lastTemp = currentTemp;
+  state.history.push({ temp: currentTemp, time: localTime });
+  saveLocationState(location.id, localDate, state);
+  
+  return alerts.length > 0 ? alerts : null;
+}
+
+/**
+ * Format alert message for Telegram
+ */
+function formatAlert(alert) {
+  const { location, temp, time, date } = alert;
+  const dateFormatted = moment(date).format('MMM D');
+  
+  if (alert.type === 'new_high') {
+    return (
+      `📈 *NEW HIGH RECORDED*\n\n` +
+      `${location.emoji} *${location.name}*\n` +
+      `🌡️ Temperature: *${temp}°C*\n` +
+      `📊 Previous High: ${alert.prevHigh}°C\n` +
+      `🕐 Time: ${time} (${dateFormatted})`
+    );
+  }
+  
+  if (alert.type === 'drop') {
+    const dropAmount = (alert.high - temp).toFixed(1);
+    return (
+      `📉 *TEMPERATURE DROP*\n\n` +
+      `${location.emoji} *${location.name}*\n` +
+      `🌡️ Current: *${temp}°C*\n` +
+      `📊 Day's High: ${alert.high}°C (↓${dropAmount}°C)\n` +
+      `🕐 Time: ${time} (${dateFormatted})`
+    );
+  }
+  
+  return '';
+}
+
+/**
+ * Main polling function - processes all locations
+ */
+export async function pollAllLocations() {
+  console.log(`\n⏰ Polling all locations at ${new Date().toISOString()}`);
+  
+  const allAlerts = [];
+  
+  for (const location of locations) {
+    try {
+      const alerts = await processLocation(location);
+      if (alerts) {
+        allAlerts.push(...alerts);
+      }
+    } catch (err) {
+      console.error(`Error processing ${location.name}:`, err.message);
+    }
+    
+    // Small delay between requests to avoid rate limiting
+    await new Promise(resolve => setTimeout(resolve, 500));
+  }
+  
+  // Send alerts to users who have each market enabled
+  for (const alert of allAlerts) {
+    const message = formatAlert(alert);
+    if (message) {
+      const sentCount = await broadcastMessage(message, alert.location.id);
+      console.log(`   📤 Sent ${alert.location.name} alert to ${sentCount} user(s)`);
+    }
+  }
+  
+  console.log(`✅ Polling complete. ${allAlerts.length} alert(s) processed.`);
+}
+
+/**
+ * Handle /status command
+ */
+async function handleStatus(chatId) {
+  if (currentReadings.size === 0) {
+    await sendMessage(chatId, '⏳ No data yet. Waiting for first poll...');
+    return;
+  }
+  
+  let message = '🌡️ *Current Temperatures*\n\n';
+  
+  for (const location of locations) {
+    const reading = currentReadings.get(location.id);
+    
+    if (reading) {
+      const highInfo = reading.high !== null ? ` (High: ${reading.high}°C)` : '';
+      message += `${location.emoji} *${location.name}*: ${reading.temp}°C${highInfo}\n`;
+      message += `   └ ${reading.time} • ${reading.date}\n\n`;
+    } else {
+      message += `${location.emoji} *${location.name}*: No data\n\n`;
+    }
+  }
+  
+  message += `_Last updated: ${new Date().toLocaleTimeString()}_`;
+  
+  await sendMessage(chatId, message);
+}
+
+/**
+ * Calculate milliseconds until next poll time
+ * Polls at :00:10, :05:10, :10:10, etc. (every 5 minutes with 10 second offset)
+ */
+function getMillisUntilNextPoll() {
+  const now = new Date();
+  const minutes = now.getMinutes();
+  const seconds = now.getSeconds();
+  const ms = now.getMilliseconds();
+  
+  // Find next 5-minute interval
+  const nextInterval = Math.ceil(minutes / 5) * 5;
+  const minutesToWait = nextInterval - minutes;
+  
+  // Calculate target time (next interval + 10 seconds)
+  let targetMs = (minutesToWait * 60 * 1000) - (seconds * 1000) - ms + (10 * 1000);
+  
+  // If we're past the 10-second mark of current interval, wait for next
+  if (targetMs <= 0) {
+    targetMs += 5 * 60 * 1000; // Add 5 minutes
+  }
+  
+  return targetMs;
+}
+
+/**
+ * Schedule next poll
+ */
+function scheduleNextPoll() {
+  const msUntilNext = getMillisUntilNextPoll();
+  const nextTime = new Date(Date.now() + msUntilNext);
+  
+  console.log(`⏳ Next poll scheduled for ${nextTime.toLocaleTimeString()} (in ${Math.round(msUntilNext / 1000)}s)`);
+  
+  setTimeout(async () => {
+    await pollAllLocations();
+    scheduleNextPoll();
+  }, msUntilNext);
+}
+
+/**
+ * Initialize the weather service
+ */
+export async function initWeatherService() {
+  console.log('🌤️ Weather service initializing...');
+  
+  // Set up status handler for Telegram
+  setStatusHandler(handleStatus);
+  
+  // Clean up old state files
+  cleanupOldStateFiles();
+  
+  // Do initial poll immediately
+  console.log('📡 Running initial poll...');
+  await pollAllLocations();
+  
+  // Schedule regular polls
+  scheduleNextPoll();
+  
+  console.log('✅ Weather service initialized');
+}
+

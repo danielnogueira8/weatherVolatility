@@ -1,0 +1,26 @@
+CURL REQUESTS NEEDED:
+
+# Atlanta
+curl "https://wundergroundapi-production.up.railway.app/api/weather/history?location=us/ga/atlanta/KATL&date=2025-12-16"
+
+# Seattle
+curl "https://wundergroundapi-production.up.railway.app/api/weather/history?location=us/wa/seatac/KSEA&date=2025-12-16"
+
+# NYC (JFK)
+curl "https://wundergroundapi-production.up.railway.app/api/weather/history?location=us/new-york/KJFK&date=2025-12-16"
+
+# London
+curl "https://wundergroundapi-production.up.railway.app/api/weather/history?location=gb/london/EGLL&date=2025-12-16"
+
+# Seoul
+curl "https://wundergroundapi-production.up.railway.app/api/weather/history?location=kr/incheon/RKSI&date=2025-12-16"
+
+# Toronto
+curl "https://wundergroundapi-production.up.railway.app/api/weather/history?location=ca/mississauga/CYYZ&date=2025-12-16"
+
+# Dallas
+curl "https://wundergroundapi-production.up.railway.app/api/weather/history?location=us/tx/dallas/KDAL&date=2025-12-16"
+
+
+TELEGRAM BOT APIAPI KEY: 8441972074:AAHL8R_CxNeoLrSwLEBbv1l9RaexudgZQCw
+
