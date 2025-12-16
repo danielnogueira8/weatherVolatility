@@ -107,6 +107,31 @@ function extractCurrentTemp(apiResponse) {
 }
 
 /**
+ * Extract daily high temperature from API response
+ * API structure: { success: true, data: { daily: { temperature: { max: X } } } }
+ */
+function extractDailyHigh(apiResponse) {
+  const data = apiResponse?.data || apiResponse;
+  
+  // Primary path: data.daily.temperature.max
+  if (typeof data?.daily?.temperature?.max === 'number') {
+    return data.daily.temperature.max;
+  }
+  
+  // Fallback: find max from hourly_data
+  if (data?.hourly_data && Array.isArray(data.hourly_data) && data.hourly_data.length > 0) {
+    const temps = data.hourly_data
+      .map(h => h.temperature_c)
+      .filter(t => typeof t === 'number');
+    if (temps.length > 0) {
+      return Math.max(...temps);
+    }
+  }
+  
+  return null;
+}
+
+/**
  * Process temperature data for a location and generate alerts
  */
 async function processLocation(location) {
@@ -117,22 +142,27 @@ async function processLocation(location) {
   }
   
   const currentTemp = extractCurrentTemp(result.data);
+  const dailyHigh = extractDailyHigh(result.data);
   
   if (currentTemp === null) {
     console.log(`⚠️ Could not extract temperature for ${location.name}`);
     return null;
   }
   
-  const localDate = result.localDate;
+  // Use the API date for state management, but actual local date for display
+  const apiDate = result.localDate;
+  const actualLocalDate = getLocalDate(location.timezone);
   const localTime = getLocalTime(location.timezone);
-  const state = loadLocationState(location.id, localDate);
+  const state = loadLocationState(location.id, apiDate);
   
-  // Store for /status command
+  // Store for /status command - use actual local date and API's daily high
   currentReadings.set(location.id, {
     temp: currentTemp,
     time: localTime,
-    date: localDate,
-    high: state.highTemp
+    date: actualLocalDate,  // Show actual local date, not API fallback date
+    high: dailyHigh,        // Use API's daily high, not our tracked high
+    trackedHigh: state.highTemp,  // Keep tracked high for reference
+    isFallback: result.isFallback || false
   });
   
   const alerts = [];
@@ -143,13 +173,13 @@ async function processLocation(location) {
     state.lastTemp = currentTemp;
     state.hasAlertedDrop = false;
     state.history.push({ temp: currentTemp, time: localTime });
-    saveLocationState(location.id, localDate, state);
+    saveLocationState(location.id, apiDate, state);
     
-    console.log(`📊 ${location.emoji} ${location.name}: Baseline set at ${currentTemp}°C`);
+    console.log(`📊 ${location.emoji} ${location.name}: Baseline set at ${currentTemp}°C (Daily high: ${dailyHigh}°C)`);
     return null;
   }
   
-  // Check for new high
+  // Check for new high (based on our tracked observations)
   if (currentTemp > state.highTemp) {
     const prevHigh = state.highTemp;
     state.highTemp = currentTemp;
@@ -161,7 +191,7 @@ async function processLocation(location) {
       temp: currentTemp,
       prevHigh,
       time: localTime,
-      date: localDate
+      date: actualLocalDate
     });
     
     console.log(`📈 ${location.emoji} ${location.name}: NEW HIGH ${currentTemp}°C (prev: ${prevHigh}°C)`);
@@ -176,7 +206,7 @@ async function processLocation(location) {
       temp: currentTemp,
       high: state.highTemp,
       time: localTime,
-      date: localDate
+      date: actualLocalDate
     });
     
     console.log(`📉 ${location.emoji} ${location.name}: DROPPED to ${currentTemp}°C (high was: ${state.highTemp}°C)`);
@@ -185,9 +215,25 @@ async function processLocation(location) {
   // Update state
   state.lastTemp = currentTemp;
   state.history.push({ temp: currentTemp, time: localTime });
-  saveLocationState(location.id, localDate, state);
+  saveLocationState(location.id, apiDate, state);
   
   return alerts.length > 0 ? alerts : null;
+}
+
+/**
+ * Check if local time is in the critical window (1PM - 3:30PM)
+ */
+function isInCriticalWindow(timezone) {
+  const now = moment().tz(timezone);
+  const hour = now.hour();
+  const minute = now.minute();
+  
+  // 1:00 PM (13:00) to 3:30 PM (15:30)
+  const timeInMinutes = hour * 60 + minute;
+  const startWindow = 13 * 60;      // 1:00 PM = 780 minutes
+  const endWindow = 15 * 60 + 30;   // 3:30 PM = 930 minutes
+  
+  return timeInMinutes >= startWindow && timeInMinutes <= endWindow;
 }
 
 /**
@@ -197,24 +243,35 @@ function formatAlert(alert) {
   const { location, temp, time, date } = alert;
   const dateFormatted = moment(date).format('MMM D');
   
+  // Check if this alert is during the critical window
+  const isCritical = isInCriticalWindow(location.timezone);
+  const criticalHeader = isCritical 
+    ? `🚨🚨🚨 *PEAK HOURS ALERT* 🚨🚨🚨\n\n` 
+    : '';
+  const criticalFooter = isCritical 
+    ? `\n\n⚠️ *CRITICAL WINDOW: 1PM-3:30PM*` 
+    : '';
+  
   if (alert.type === 'new_high') {
+    const title = isCritical ? '🔴 *NEW HIGH RECORDED*' : '📈 *NEW HIGH RECORDED*';
     return (
-      `📈 *NEW HIGH RECORDED*\n\n` +
+      `${criticalHeader}${title}\n\n` +
       `${location.emoji} *${location.name}*\n` +
       `🌡️ Temperature: *${temp}°C*\n` +
       `📊 Previous High: ${alert.prevHigh}°C\n` +
-      `🕐 Time: ${time} (${dateFormatted})`
+      `🕐 Time: ${time} (${dateFormatted})${criticalFooter}`
     );
   }
   
   if (alert.type === 'drop') {
     const dropAmount = (alert.high - temp).toFixed(1);
+    const title = isCritical ? '🔴 *TEMPERATURE DROP*' : '📉 *TEMPERATURE DROP*';
     return (
-      `📉 *TEMPERATURE DROP*\n\n` +
+      `${criticalHeader}${title}\n\n` +
       `${location.emoji} *${location.name}*\n` +
       `🌡️ Current: *${temp}°C*\n` +
       `📊 Day's High: ${alert.high}°C (↓${dropAmount}°C)\n` +
-      `🕐 Time: ${time} (${dateFormatted})`
+      `🕐 Time: ${time} (${dateFormatted})${criticalFooter}`
     );
   }
   
@@ -271,14 +328,16 @@ async function handleStatus(chatId) {
     
     if (reading) {
       const highInfo = reading.high !== null ? ` (High: ${reading.high}°C)` : '';
-      message += `${location.emoji} *${location.name}*: ${reading.temp}°C${highInfo}\n`;
+      const fallbackNote = reading.isFallback ? ' ⏳' : '';
+      message += `${location.emoji} *${location.name}*: ${reading.temp}°C${highInfo}${fallbackNote}\n`;
       message += `   └ ${reading.time} • ${reading.date}\n\n`;
     } else {
       message += `${location.emoji} *${location.name}*: No data\n\n`;
     }
   }
   
-  message += `_Last updated: ${new Date().toLocaleTimeString()}_`;
+  message += `_Last updated: ${new Date().toLocaleTimeString()}_\n`;
+  message += `_⏳ = Data from previous day (new day data pending)_`;
   
   await sendMessage(chatId, message);
 }
