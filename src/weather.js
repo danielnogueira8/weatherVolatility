@@ -155,13 +155,20 @@ async function processLocation(location) {
   const localTime = getLocalTime(location.timezone);
   const state = loadLocationState(location.id, apiDate);
   
-  // Store for /status command - use actual local date and API's daily high
+  // Determine the high to display:
+  // - If we have a tracked high, use the MAX of (our tracked high, current temp)
+  // - If no tracked high yet (first reading), use current temp
+  const displayHigh = state.highTemp !== null 
+    ? Math.max(state.highTemp, currentTemp) 
+    : currentTemp;
+  
+  // Store for /status command
   currentReadings.set(location.id, {
     temp: currentTemp,
     time: localTime,
     date: actualLocalDate,  // Show actual local date, not API fallback date
-    high: dailyHigh,        // Use API's daily high, not our tracked high
-    trackedHigh: state.highTemp,  // Keep tracked high for reference
+    high: displayHigh,      // Use our tracked/observed high
+    apiDailyMax: dailyHigh, // Keep API's daily max for reference
     isFallback: result.isFallback || false
   });
   
