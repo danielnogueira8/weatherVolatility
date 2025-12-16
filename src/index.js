@@ -15,7 +15,7 @@ console.log(`
 ╠═══════════════════════════════════════════════════════╣
 ║  Monitoring: Atlanta, Seattle, NYC, London,           ║
 ║              Seoul, Toronto, Dallas                   ║
-║  Poll Interval: Every 5 minutes (:00:10, :05:10...)   ║
+║  Poll Interval: Every 10 minutes (:00:10, :10:10...)  ║
 ╚═══════════════════════════════════════════════════════╝
 `);
 

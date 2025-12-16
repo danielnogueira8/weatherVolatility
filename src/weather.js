@@ -12,6 +12,30 @@ import { broadcastMessage, sendMessage, setStatusHandler } from './telegram.js';
 // Store for current readings (for /status command)
 const currentReadings = new Map();
 
+// Debug log buffer - collects logs and sends to Telegram
+let debugLogBuffer = [];
+
+/**
+ * Log to console and buffer for Telegram
+ */
+function debugLog(message) {
+  console.log(message);
+  debugLogBuffer.push(message);
+}
+
+/**
+ * Send buffered logs to Telegram and clear buffer
+ */
+async function flushLogsToTelegram() {
+  if (debugLogBuffer.length === 0) return;
+  
+  const logMessage = '```\n' + debugLogBuffer.join('\n') + '\n```';
+  debugLogBuffer = [];
+  
+  // Send to all users (for debugging)
+  await broadcastMessage(`📋 *DEBUG LOGS*\n\n${logMessage}`, null, { parse_mode: 'Markdown' });
+}
+
 /**
  * Get the current date string for a location in its timezone
  */
@@ -34,7 +58,7 @@ async function fetchWeatherData(location) {
   const localDate = getLocalDate(location.timezone);
   const url = `${API_BASE_URL}?location=${location.apiPath}&date=${localDate}`;
   
-  console.log(`\n📡 [${location.name}] Fetching: ${url}`);
+  debugLog(`\n📡 [${location.name}] ${url}`);
   
   try {
     const response = await axios.get(url, { timeout: 10000 });
@@ -47,8 +71,8 @@ async function fetchWeatherData(location) {
     const condition = data?.data?.current?.condition;
     const cacheHit = data?.metadata?.cache_hit;
     
-    console.log(`   ✅ Response: current=${current}°C, dailyMax=${dailyMax}°C, dailyMin=${dailyMin}°C`);
-    console.log(`   📋 Condition: "${condition}" | Cache: ${cacheHit ? 'HIT' : 'MISS'}`);
+    debugLog(`   ✅ cur=${current}°C max=${dailyMax}°C min=${dailyMin}°C`);
+    debugLog(`   📋 "${condition}" | Cache: ${cacheHit ? 'HIT' : 'MISS'}`);
     
     return {
       success: true,
@@ -68,8 +92,7 @@ async function fetchWeatherData(location) {
         const yesterdayDate = moment().tz(location.timezone).subtract(1, 'day').format('YYYY-MM-DD');
         const fallbackUrl = `${API_BASE_URL}?location=${location.apiPath}&date=${yesterdayDate}`;
         
-        console.log(`   ⏰ Local date ${localDate} is future for API, retrying with ${yesterdayDate}`);
-        console.log(`   📡 Fallback URL: ${fallbackUrl}`);
+        debugLog(`   ⏰ Future date, using ${yesterdayDate}`);
         
         try {
           const fallbackResponse = await axios.get(fallbackUrl, { timeout: 10000 });
@@ -80,8 +103,8 @@ async function fetchWeatherData(location) {
           const dailyMax = data?.data?.daily?.temperature?.max;
           const condition = data?.data?.current?.condition;
           
-          console.log(`   ✅ Fallback response: current=${current}°C, dailyMax=${dailyMax}°C`);
-          console.log(`   📋 Condition: "${condition}"`);
+          debugLog(`   ✅ cur=${current}°C max=${dailyMax}°C`);
+          debugLog(`   📋 "${condition}"`);
           
           return {
             success: true,
@@ -90,14 +113,14 @@ async function fetchWeatherData(location) {
             isFallback: true
           };
         } catch (fallbackErr) {
-          console.error(`   ❌ Fallback failed: ${fallbackErr.message}`);
+          debugLog(`   ❌ Fallback failed: ${fallbackErr.message}`);
         }
       }
     }
     
-    console.error(`   ❌ Error: ${err.message}`);
+    debugLog(`   ❌ Error: ${err.message}`);
     if (err.response?.data) {
-      console.error(`   📄 Response: ${JSON.stringify(err.response.data)}`);
+      debugLog(`   📄 ${JSON.stringify(err.response.data)}`);
     }
     
     return {
@@ -175,7 +198,7 @@ async function processLocation(location) {
   const dailyHigh = extractDailyHigh(result.data);
   
   if (currentTemp === null) {
-    console.log(`⚠️ Could not extract temperature for ${location.name}`);
+    debugLog(`⚠️ Could not extract temp for ${location.name}`);
     return null;
   }
   
@@ -212,13 +235,13 @@ async function processLocation(location) {
     state.history.push({ temp: currentTemp, time: localTime });
     saveLocationState(location.id, apiDate, state);
     
-    console.log(`   📊 BASELINE SET: ${currentTemp}°C`);
+    debugLog(`   📊 BASELINE: ${currentTemp}°C`);
     return null;
   }
   
   // Log current state
-  console.log(`   📊 State: trackedHigh=${state.highTemp}°C, lastTemp=${state.lastTemp}°C, hasAlertedDrop=${state.hasAlertedDrop}`);
-  console.log(`   🌡️  Current: ${currentTemp}°C | Display High: ${displayHigh}°C`);
+  debugLog(`   📊 high=${state.highTemp}°C last=${state.lastTemp}°C drop=${state.hasAlertedDrop}`);
+  debugLog(`   🌡️ cur=${currentTemp}°C disp=${displayHigh}°C`);
   
   // Check for new high (based on our tracked observations)
   if (currentTemp > state.highTemp) {
@@ -235,7 +258,7 @@ async function processLocation(location) {
       date: actualLocalDate
     });
     
-    console.log(`   🚨 ALERT: NEW HIGH ${currentTemp}°C (prev: ${prevHigh}°C)`);
+    debugLog(`   🚨 NEW HIGH ${currentTemp}°C (was ${prevHigh}°C)`);
   }
   // Check for first drop from high
   else if (currentTemp < state.highTemp && !state.hasAlertedDrop) {
@@ -250,9 +273,9 @@ async function processLocation(location) {
       date: actualLocalDate
     });
     
-    console.log(`   🚨 ALERT: DROPPED to ${currentTemp}°C (high was: ${state.highTemp}°C)`);
+    debugLog(`   🚨 DROP to ${currentTemp}°C (high ${state.highTemp}°C)`);
   } else {
-    console.log(`   ✓ No alert needed`);
+    debugLog(`   ✓ No alert`);
   }
   
   // Update state
@@ -325,7 +348,7 @@ function formatAlert(alert) {
  * Main polling function - processes all locations
  */
 export async function pollAllLocations() {
-  console.log(`\n⏰ Polling all locations at ${new Date().toISOString()}`);
+  debugLog(`\n⏰ POLL @ ${new Date().toISOString()}`);
   
   const allAlerts = [];
   
@@ -336,7 +359,7 @@ export async function pollAllLocations() {
         allAlerts.push(...alerts);
       }
     } catch (err) {
-      console.error(`Error processing ${location.name}:`, err.message);
+      debugLog(`❌ ${location.name}: ${err.message}`);
     }
     
     // Small delay between requests to avoid rate limiting
@@ -348,11 +371,14 @@ export async function pollAllLocations() {
     const message = formatAlert(alert);
     if (message) {
       const sentCount = await broadcastMessage(message, alert.location.id);
-      console.log(`   📤 Sent ${alert.location.name} alert to ${sentCount} user(s)`);
+      debugLog(`📤 ${alert.location.name} alert → ${sentCount} user(s)`);
     }
   }
   
-  console.log(`✅ Polling complete. ${allAlerts.length} alert(s) processed.`);
+  debugLog(`✅ Done. ${allAlerts.length} alert(s).`);
+  
+  // Send logs to Telegram for debugging
+  await flushLogsToTelegram();
 }
 
 /**
@@ -387,7 +413,7 @@ async function handleStatus(chatId) {
 
 /**
  * Calculate milliseconds until next poll time
- * Polls at :00:10, :05:10, :10:10, etc. (every 5 minutes with 10 second offset)
+ * Polls at :00:10, :10:10, :20:10, etc. (every 10 minutes with 10 second offset)
  */
 function getMillisUntilNextPoll() {
   const now = new Date();
@@ -395,8 +421,8 @@ function getMillisUntilNextPoll() {
   const seconds = now.getSeconds();
   const ms = now.getMilliseconds();
   
-  // Find next 5-minute interval
-  const nextInterval = Math.ceil(minutes / 5) * 5;
+  // Find next 10-minute interval
+  const nextInterval = Math.ceil(minutes / 10) * 10;
   const minutesToWait = nextInterval - minutes;
   
   // Calculate target time (next interval + 10 seconds)
@@ -404,7 +430,7 @@ function getMillisUntilNextPoll() {
   
   // If we're past the 10-second mark of current interval, wait for next
   if (targetMs <= 0) {
-    targetMs += 5 * 60 * 1000; // Add 5 minutes
+    targetMs += 10 * 60 * 1000; // Add 10 minutes
   }
   
   return targetMs;
@@ -417,7 +443,7 @@ function scheduleNextPoll() {
   const msUntilNext = getMillisUntilNextPoll();
   const nextTime = new Date(Date.now() + msUntilNext);
   
-  console.log(`⏳ Next poll scheduled for ${nextTime.toLocaleTimeString()} (in ${Math.round(msUntilNext / 1000)}s)`);
+  console.log(`⏳ Next poll @ ${nextTime.toLocaleTimeString()} (${Math.round(msUntilNext / 1000)}s)`);
   
   setTimeout(async () => {
     await pollAllLocations();
