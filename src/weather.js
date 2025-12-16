@@ -34,8 +34,22 @@ async function fetchWeatherData(location) {
   const localDate = getLocalDate(location.timezone);
   const url = `${API_BASE_URL}?location=${location.apiPath}&date=${localDate}`;
   
+  console.log(`\n📡 [${location.name}] Fetching: ${url}`);
+  
   try {
     const response = await axios.get(url, { timeout: 10000 });
+    const data = response.data;
+    
+    // Log the response details
+    const current = data?.data?.current?.temperature?.celsius;
+    const dailyMax = data?.data?.daily?.temperature?.max;
+    const dailyMin = data?.data?.daily?.temperature?.min;
+    const condition = data?.data?.current?.condition;
+    const cacheHit = data?.metadata?.cache_hit;
+    
+    console.log(`   ✅ Response: current=${current}°C, dailyMax=${dailyMax}°C, dailyMin=${dailyMin}°C`);
+    console.log(`   📋 Condition: "${condition}" | Cache: ${cacheHit ? 'HIT' : 'MISS'}`);
+    
     return {
       success: true,
       data: response.data,
@@ -54,9 +68,21 @@ async function fetchWeatherData(location) {
         const yesterdayDate = moment().tz(location.timezone).subtract(1, 'day').format('YYYY-MM-DD');
         const fallbackUrl = `${API_BASE_URL}?location=${location.apiPath}&date=${yesterdayDate}`;
         
+        console.log(`   ⏰ Local date ${localDate} is future for API, retrying with ${yesterdayDate}`);
+        console.log(`   📡 Fallback URL: ${fallbackUrl}`);
+        
         try {
-          console.log(`⏰ ${location.name}: Local date ${localDate} is future for API, using ${yesterdayDate}`);
           const fallbackResponse = await axios.get(fallbackUrl, { timeout: 10000 });
+          const data = fallbackResponse.data;
+          
+          // Log fallback response
+          const current = data?.data?.current?.temperature?.celsius;
+          const dailyMax = data?.data?.daily?.temperature?.max;
+          const condition = data?.data?.current?.condition;
+          
+          console.log(`   ✅ Fallback response: current=${current}°C, dailyMax=${dailyMax}°C`);
+          console.log(`   📋 Condition: "${condition}"`);
+          
           return {
             success: true,
             data: fallbackResponse.data,
@@ -64,12 +90,16 @@ async function fetchWeatherData(location) {
             isFallback: true
           };
         } catch (fallbackErr) {
-          console.error(`❌ Error fetching ${location.name} (fallback):`, fallbackErr.message);
+          console.error(`   ❌ Fallback failed: ${fallbackErr.message}`);
         }
       }
     }
     
-    console.error(`❌ Error fetching ${location.name}:`, err.message);
+    console.error(`   ❌ Error: ${err.message}`);
+    if (err.response?.data) {
+      console.error(`   📄 Response: ${JSON.stringify(err.response.data)}`);
+    }
+    
     return {
       success: false,
       error: err.message,
@@ -182,9 +212,13 @@ async function processLocation(location) {
     state.history.push({ temp: currentTemp, time: localTime });
     saveLocationState(location.id, apiDate, state);
     
-    console.log(`📊 ${location.emoji} ${location.name}: Baseline set at ${currentTemp}°C (Daily high: ${dailyHigh}°C)`);
+    console.log(`   📊 BASELINE SET: ${currentTemp}°C`);
     return null;
   }
+  
+  // Log current state
+  console.log(`   📊 State: trackedHigh=${state.highTemp}°C, lastTemp=${state.lastTemp}°C, hasAlertedDrop=${state.hasAlertedDrop}`);
+  console.log(`   🌡️  Current: ${currentTemp}°C | Display High: ${displayHigh}°C`);
   
   // Check for new high (based on our tracked observations)
   if (currentTemp > state.highTemp) {
@@ -201,7 +235,7 @@ async function processLocation(location) {
       date: actualLocalDate
     });
     
-    console.log(`📈 ${location.emoji} ${location.name}: NEW HIGH ${currentTemp}°C (prev: ${prevHigh}°C)`);
+    console.log(`   🚨 ALERT: NEW HIGH ${currentTemp}°C (prev: ${prevHigh}°C)`);
   }
   // Check for first drop from high
   else if (currentTemp < state.highTemp && !state.hasAlertedDrop) {
@@ -216,7 +250,9 @@ async function processLocation(location) {
       date: actualLocalDate
     });
     
-    console.log(`📉 ${location.emoji} ${location.name}: DROPPED to ${currentTemp}°C (high was: ${state.highTemp}°C)`);
+    console.log(`   🚨 ALERT: DROPPED to ${currentTemp}°C (high was: ${state.highTemp}°C)`);
+  } else {
+    console.log(`   ✓ No alert needed`);
   }
   
   // Update state
