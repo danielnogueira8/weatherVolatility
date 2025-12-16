@@ -292,36 +292,61 @@ function formatAlert(alert) {
   const { location, temp, time, date } = alert;
   const dateFormatted = moment(date).format('MMM D');
   
-  // Check if this alert is during the critical window
+  // Check if this alert is during the critical window (attention zone)
   const isCritical = isInCriticalWindow(location.timezone);
-  const criticalHeader = isCritical 
-    ? `🚨🚨🚨 *PEAK HOURS ALERT* 🚨🚨🚨\n\n` 
-    : '';
-  const criticalFooter = isCritical 
-    ? `\n\n⚠️ *CRITICAL WINDOW: 1PM-3:30PM*` 
-    : '';
   
   if (alert.type === 'new_high') {
-    const title = isCritical ? '🔴 *NEW HIGH RECORDED*' : '📈 *NEW HIGH RECORDED*';
-    return (
-      `${criticalHeader}${title}\n\n` +
-      `${location.emoji} *${location.name}*\n` +
-      `🌡️ Temperature: *${temp}°C*\n` +
-      `📊 Previous High: ${alert.prevHigh}°C\n` +
-      `🕐 Time: ${time} (${dateFormatted})${criticalFooter}`
-    );
+    if (isCritical) {
+      // SPECIAL ALERT: New high during attention zone
+      return (
+        `🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨\n` +
+        `⚠️ *ATTENTION ZONE - NEW HIGH* ⚠️\n` +
+        `🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨\n\n` +
+        `${location.emoji} *${location.name}*\n\n` +
+        `🌡️ NEW HIGH: *${temp}°C*\n` +
+        `📊 Previous: ${alert.prevHigh}°C (+${temp - alert.prevHigh}°C)\n` +
+        `🕐 ${time} (${dateFormatted})\n\n` +
+        `━━━━━━━━━━━━━━━━━━━━━━\n` +
+        `⏰ *PEAK HOURS: 1PM - 3:30PM*\n` +
+        `━━━━━━━━━━━━━━━━━━━━━━`
+      );
+    } else {
+      return (
+        `📈 *NEW HIGH RECORDED*\n\n` +
+        `${location.emoji} *${location.name}*\n` +
+        `🌡️ Temperature: *${temp}°C*\n` +
+        `📊 Previous High: ${alert.prevHigh}°C\n` +
+        `🕐 Time: ${time} (${dateFormatted})`
+      );
+    }
   }
   
   if (alert.type === 'drop') {
     const dropAmount = (alert.high - temp).toFixed(1);
-    const title = isCritical ? '🔴 *TEMPERATURE DROP*' : '📉 *TEMPERATURE DROP*';
-    return (
-      `${criticalHeader}${title}\n\n` +
-      `${location.emoji} *${location.name}*\n` +
-      `🌡️ Current: *${temp}°C*\n` +
-      `📊 Day's High: ${alert.high}°C (↓${dropAmount}°C)\n` +
-      `🕐 Time: ${time} (${dateFormatted})${criticalFooter}`
-    );
+    
+    if (isCritical) {
+      // SPECIAL ALERT: First drop during attention zone
+      return (
+        `🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨\n` +
+        `⚠️ *ATTENTION ZONE - DROP* ⚠️\n` +
+        `🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨\n\n` +
+        `${location.emoji} *${location.name}*\n\n` +
+        `🌡️ DROPPED TO: *${temp}°C*\n` +
+        `📊 From High: ${alert.high}°C (↓${dropAmount}°C)\n` +
+        `🕐 ${time} (${dateFormatted})\n\n` +
+        `━━━━━━━━━━━━━━━━━━━━━━\n` +
+        `⏰ *PEAK HOURS: 1PM - 3:30PM*\n` +
+        `━━━━━━━━━━━━━━━━━━━━━━`
+      );
+    } else {
+      return (
+        `📉 *TEMPERATURE DROP*\n\n` +
+        `${location.emoji} *${location.name}*\n` +
+        `🌡️ Current: *${temp}°C*\n` +
+        `📊 Day's High: ${alert.high}°C (↓${dropAmount}°C)\n` +
+        `🕐 Time: ${time} (${dateFormatted})`
+      );
+    }
   }
   
   return '';
