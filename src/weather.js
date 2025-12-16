@@ -12,28 +12,11 @@ import { broadcastMessage, sendMessage, setStatusHandler } from './telegram.js';
 // Store for current readings (for /status command)
 const currentReadings = new Map();
 
-// Debug log buffer - collects logs and sends to Telegram
-let debugLogBuffer = [];
-
 /**
- * Log to console and buffer for Telegram
+ * Log to console only
  */
 function debugLog(message) {
   console.log(message);
-  debugLogBuffer.push(message);
-}
-
-/**
- * Send buffered logs to Telegram and clear buffer
- */
-async function flushLogsToTelegram() {
-  if (debugLogBuffer.length === 0) return;
-  
-  const logMessage = '```\n' + debugLogBuffer.join('\n') + '\n```';
-  debugLogBuffer = [];
-  
-  // Send to all users (for debugging)
-  await broadcastMessage(`📋 *DEBUG LOGS*\n\n${logMessage}`, null, { parse_mode: 'Markdown' });
 }
 
 /**
@@ -376,9 +359,6 @@ export async function pollAllLocations() {
   }
   
   debugLog(`✅ Done. ${allAlerts.length} alert(s).`);
-  
-  // Send logs to Telegram for debugging
-  await flushLogsToTelegram();
 }
 
 /**
