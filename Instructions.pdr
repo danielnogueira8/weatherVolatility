@@ -22,5 +22,5 @@ curl "https://wundergroundapi-production.up.railway.app/api/weather/history?loca
 curl "https://wundergroundapi-production.up.railway.app/api/weather/history?location=us/tx/dallas/KDAL&date=2025-12-16"
 
 
-TELEGRAM BOT APIAPI KEY: 8441972074:AAHL8R_CxNeoLrSwLEBbv1l9RaexudgZQCw
+TELEGRAM BOT API KEY: (stored in .env file)
 

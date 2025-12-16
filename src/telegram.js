@@ -158,6 +158,18 @@ export function initBot() {
     }
   });
   
+  // Set up the bot command menu (blue button)
+  bot.setMyCommands([
+    { command: 'start', description: '🚀 Subscribe to weather alerts' },
+    { command: 'markets', description: '🌍 Enable/disable market notifications' },
+    { command: 'status', description: '🌡️ View current temperatures' },
+    { command: 'stop', description: '🛑 Unsubscribe from alerts' }
+  ]).then(() => {
+    console.log('📋 Bot command menu set up');
+  }).catch(err => {
+    console.error('Failed to set bot commands:', err.message);
+  });
+  
   console.log('🤖 Telegram bot initialized and listening...');
   return bot;
 }
