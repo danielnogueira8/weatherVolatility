@@ -7,6 +7,7 @@ import TelegramBot from 'node-telegram-bot-api';
 import { TELEGRAM_BOT_TOKEN } from '../config/telegram.js';
 import { addUser, removeUser, loadUsers, getUser, toggleUserMarket, getUsersForMarket } from './state.js';
 import { locations } from '../config/locations.js';
+import { getAllAttentionZones } from './weather.js';
 
 let bot = null;
 
@@ -159,26 +160,28 @@ export function initBot() {
     }
   });
   
-  // Handle /timezone command - show critical windows in Lisbon time
+  // Handle /timezone command - show dynamic attention zones
   bot.onText(/\/timezone/, (msg) => {
     const chatId = msg.chat.id;
     
+    const zones = getAllAttentionZones();
+    
+    let zonesList = '';
+    for (const loc of locations) {
+      const zone = zones[loc.id];
+      const display = zone?.display || 'Calculating...';
+      zonesList += `${loc.emoji} *${loc.name}*: ${display}\n`;
+    }
+    
     const message = 
-      `🕐 *Peak Hours (1PM-3:30PM) in Lisbon Time*\n\n` +
+      `🎯 *Dynamic Attention Zones*\n\n` +
+      `_Based on last 7 days of historical data_\n` +
+      `_When each market typically hits daily high_\n\n` +
       `━━━━━━━━━━━━━━━━━━━━━━\n\n` +
-      `🌅 *Early Morning*\n` +
-      `🇰🇷 Seoul: *4:00 AM - 6:30 AM*\n\n` +
-      `☀️ *Afternoon*\n` +
-      `🇬🇧 London: *1:00 PM - 3:30 PM*\n\n` +
-      `🌆 *Evening*\n` +
-      `🍑 Atlanta: *6:00 PM - 8:30 PM*\n` +
-      `🗽 NYC: *6:00 PM - 8:30 PM*\n` +
-      `🍁 Toronto: *6:00 PM - 8:30 PM*\n` +
-      `🤠 Dallas: *7:00 PM - 9:30 PM*\n\n` +
-      `🌙 *Night*\n` +
-      `☕ Seattle: *9:00 PM - 11:30 PM*\n\n` +
+      `${zonesList}\n` +
       `━━━━━━━━━━━━━━━━━━━━━━\n` +
-      `_🚨 Alerts during these windows have special formatting_`;
+      `_🚨 Alerts during these windows have special formatting_\n` +
+      `_⏰ Times shown in each market's local timezone_`;
     
     bot.sendMessage(chatId, message, { parse_mode: 'Markdown' });
   });

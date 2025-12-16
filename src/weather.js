@@ -12,11 +12,158 @@ import { broadcastMessage, sendMessage, setStatusHandler } from './telegram.js';
 // Store for current readings (for /status command)
 const currentReadings = new Map();
 
+// Store for dynamic attention zones per location (calculated from historical data)
+// Format: { locationId: { startHour: 13, startMin: 0, endHour: 16, endMin: 0 } }
+const attentionZones = new Map();
+
 /**
  * Log to console only
  */
 function debugLog(message) {
   console.log(message);
+}
+
+/**
+ * Parse time string (e.g., "2:30 PM") to hours and minutes
+ */
+function parseTimeString(timeStr) {
+  const match = timeStr.match(/(\d{1,2}):(\d{2})\s*(AM|PM)/i);
+  if (!match) return null;
+  
+  let hours = parseInt(match[1]);
+  const minutes = parseInt(match[2]);
+  const period = match[3].toUpperCase();
+  
+  if (period === 'PM' && hours !== 12) hours += 12;
+  if (period === 'AM' && hours === 12) hours = 0;
+  
+  return { hours, minutes };
+}
+
+/**
+ * Fetch historical data for a location for a specific date
+ */
+async function fetchHistoricalData(location, date) {
+  const url = `${API_BASE_URL}?location=${location.apiPath}&date=${date}`;
+  
+  try {
+    const response = await axios.get(url, { timeout: 10000 });
+    return response.data;
+  } catch (err) {
+    return null;
+  }
+}
+
+/**
+ * Find when the daily high occurred from hourly data
+ * Returns the hour (0-23) when the max temperature was recorded
+ */
+function findHighTempTime(hourlyData) {
+  if (!hourlyData || hourlyData.length === 0) return null;
+  
+  let maxTemp = -Infinity;
+  let maxTimeHour = null;
+  
+  for (const entry of hourlyData) {
+    if (entry.temperature_c > maxTemp) {
+      maxTemp = entry.temperature_c;
+      const parsed = parseTimeString(entry.time);
+      if (parsed) {
+        maxTimeHour = parsed.hours;
+      }
+    }
+  }
+  
+  return maxTimeHour;
+}
+
+/**
+ * Calculate the attention zone for a location based on last 7 days
+ * Returns a 3-hour window centered around the most common high time
+ */
+async function calculateAttentionZone(location) {
+  debugLog(`\n📊 Calculating attention zone for ${location.name}...`);
+  
+  const highTimes = [];
+  const today = moment().tz(location.timezone);
+  
+  // Fetch last 7 days of data
+  for (let i = 1; i <= 7; i++) {
+    const date = today.clone().subtract(i, 'days').format('YYYY-MM-DD');
+    const data = await fetchHistoricalData(location, date);
+    
+    if (data?.data?.hourly_data) {
+      const highHour = findHighTempTime(data.data.hourly_data);
+      if (highHour !== null) {
+        highTimes.push(highHour);
+        debugLog(`   ${date}: High at ${highHour}:00`);
+      }
+    }
+    
+    // Small delay to avoid rate limiting
+    await new Promise(resolve => setTimeout(resolve, 300));
+  }
+  
+  if (highTimes.length === 0) {
+    debugLog(`   ⚠️ No historical data, using default 1PM-4PM`);
+    return { startHour: 13, startMin: 0, endHour: 16, endMin: 0 };
+  }
+  
+  // Calculate the average hour when highs occur
+  const avgHour = Math.round(highTimes.reduce((a, b) => a + b, 0) / highTimes.length);
+  
+  // Create a 3-hour window centered around the average
+  // But shift slightly earlier since highs tend to occur mid-window
+  const startHour = Math.max(0, avgHour - 1);
+  const endHour = Math.min(23, avgHour + 2);
+  
+  debugLog(`   ✅ Attention zone: ${startHour}:00 - ${endHour}:00 (avg high at ${avgHour}:00)`);
+  
+  return { startHour, startMin: 0, endHour, endMin: 0 };
+}
+
+/**
+ * Initialize attention zones for all locations
+ */
+async function initAttentionZones() {
+  debugLog('\n🎯 Initializing dynamic attention zones...');
+  
+  for (const location of locations) {
+    const zone = await calculateAttentionZone(location);
+    attentionZones.set(location.id, zone);
+  }
+  
+  debugLog('\n✅ Attention zones initialized\n');
+}
+
+/**
+ * Get attention zone info for a location (for display)
+ */
+export function getAttentionZoneInfo(locationId) {
+  const zone = attentionZones.get(locationId);
+  if (!zone) return null;
+  
+  const formatHour = (h) => {
+    const period = h >= 12 ? 'PM' : 'AM';
+    const hour12 = h === 0 ? 12 : (h > 12 ? h - 12 : h);
+    return `${hour12}${period}`;
+  };
+  
+  return `${formatHour(zone.startHour)} - ${formatHour(zone.endHour)}`;
+}
+
+/**
+ * Get all attention zones (for /timezone command)
+ */
+export function getAllAttentionZones() {
+  const zones = {};
+  for (const [locationId, zone] of attentionZones) {
+    zones[locationId] = {
+      ...zone,
+      display: getAttentionZoneInfo(locationId)
+    };
+  }
+  return zones;
 }
 
 /**
@@ -270,17 +417,26 @@ async function processLocation(location) {
 }
 
 /**
- * Check if local time is in the critical window (1PM - 3:30PM)
+ * Check if local time is in the attention zone for a location
+ * Uses dynamic zones calculated from historical data
  */
-function isInCriticalWindow(timezone) {
+function isInCriticalWindow(timezone, locationId) {
+  const zone = attentionZones.get(locationId);
+  
+  // Fallback to default if no zone calculated
+  if (!zone) {
+    const now = moment().tz(timezone);
+    const hour = now.hour();
+    return hour >= 13 && hour < 16; // Default 1PM-4PM
+  }
+  
   const now = moment().tz(timezone);
   const hour = now.hour();
   const minute = now.minute();
   
-  // 1:00 PM (13:00) to 3:30 PM (15:30)
   const timeInMinutes = hour * 60 + minute;
-  const startWindow = 13 * 60;      // 1:00 PM = 780 minutes
-  const endWindow = 15 * 60 + 30;   // 3:30 PM = 930 minutes
+  const startWindow = zone.startHour * 60 + zone.startMin;
+  const endWindow = zone.endHour * 60 + zone.endMin;
   
   return timeInMinutes >= startWindow && timeInMinutes <= endWindow;
 }
@@ -292,8 +448,9 @@ function formatAlert(alert) {
   const { location, temp, time, date } = alert;
   const dateFormatted = moment(date).format('MMM D');
   
-  // Check if this alert is during the critical window (attention zone)
-  const isCritical = isInCriticalWindow(location.timezone);
+  // Check if this alert is during the attention zone (dynamic per location)
+  const isCritical = isInCriticalWindow(location.timezone, location.id);
+  const zoneInfo = getAttentionZoneInfo(location.id) || '1PM - 4PM';
   
   if (alert.type === 'new_high') {
     if (isCritical) {
@@ -307,7 +464,7 @@ function formatAlert(alert) {
         `📊 Previous: ${alert.prevHigh}°C (+${temp - alert.prevHigh}°C)\n` +
         `🕐 ${time} (${dateFormatted})\n\n` +
         `━━━━━━━━━━━━━━━━━━━━━━\n` +
-        `⏰ *PEAK HOURS: 1PM - 3:30PM*\n` +
+        `⏰ *PEAK WINDOW: ${zoneInfo}*\n` +
         `━━━━━━━━━━━━━━━━━━━━━━`
       );
     } else {
@@ -335,7 +492,7 @@ function formatAlert(alert) {
         `📊 From High: ${alert.high}°C (↓${dropAmount}°C)\n` +
         `🕐 ${time} (${dateFormatted})\n\n` +
         `━━━━━━━━━━━━━━━━━━━━━━\n` +
-        `⏰ *PEAK HOURS: 1PM - 3:30PM*\n` +
+        `⏰ *PEAK WINDOW: ${zoneInfo}*\n` +
         `━━━━━━━━━━━━━━━━━━━━━━`
       );
     } else {
@@ -467,6 +624,9 @@ export async function initWeatherService() {
   
   // Clean up old state files
   cleanupOldStateFiles();
+  
+  // Calculate dynamic attention zones from historical data
+  await initAttentionZones();
   
   // Do initial poll immediately
   console.log('📡 Running initial poll...');
