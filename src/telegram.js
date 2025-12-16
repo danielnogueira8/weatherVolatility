@@ -62,6 +62,7 @@ export function initBot() {
         `*Commands:*\n` +
         `/markets - Enable/disable market alerts\n` +
         `/status - View current temperatures\n` +
+        `/timezone - Peak hours in Lisbon time\n` +
         `/stop - Unsubscribe from alerts`,
         { parse_mode: 'Markdown' }
       );
@@ -158,11 +159,36 @@ export function initBot() {
     }
   });
   
+  // Handle /timezone command - show critical windows in Lisbon time
+  bot.onText(/\/timezone/, (msg) => {
+    const chatId = msg.chat.id;
+    
+    const message = 
+      `🕐 *Peak Hours (1PM-3:30PM) in Lisbon Time*\n\n` +
+      `━━━━━━━━━━━━━━━━━━━━━━\n\n` +
+      `🌅 *Early Morning*\n` +
+      `🇰🇷 Seoul: *4:00 AM - 6:30 AM*\n\n` +
+      `☀️ *Afternoon*\n` +
+      `🇬🇧 London: *1:00 PM - 3:30 PM*\n\n` +
+      `🌆 *Evening*\n` +
+      `🍑 Atlanta: *6:00 PM - 8:30 PM*\n` +
+      `🗽 NYC: *6:00 PM - 8:30 PM*\n` +
+      `🍁 Toronto: *6:00 PM - 8:30 PM*\n` +
+      `🤠 Dallas: *7:00 PM - 9:30 PM*\n\n` +
+      `🌙 *Night*\n` +
+      `☕ Seattle: *9:00 PM - 11:30 PM*\n\n` +
+      `━━━━━━━━━━━━━━━━━━━━━━\n` +
+      `_🚨 Alerts during these windows have special formatting_`;
+    
+    bot.sendMessage(chatId, message, { parse_mode: 'Markdown' });
+  });
+  
   // Set up the bot command menu (blue button)
   bot.setMyCommands([
     { command: 'start', description: '🚀 Subscribe to weather alerts' },
     { command: 'markets', description: '🌍 Enable/disable market notifications' },
     { command: 'status', description: '🌡️ View current temperatures' },
+    { command: 'timezone', description: '🕐 Peak hours in Lisbon time' },
     { command: 'stop', description: '🛑 Unsubscribe from alerts' }
   ]).then(() => {
     console.log('📋 Bot command menu set up');
