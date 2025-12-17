@@ -9,16 +9,16 @@ import 'dotenv/config';
 import { initBot } from './telegram.js';
 import { initWeatherService } from './weather.js';
 
-const VERSION = 'v2.0.0-no-tg-logs';
+const VERSION = 'v2.1.0-hourly-fix';
 
 console.log(`
 ╔═══════════════════════════════════════════════════════╗
 ║         🌡️  WEATHER VOLATILITY ALERTS  🌡️             ║
-║                    ${VERSION}                       ║
+║                  ${VERSION}                      ║
 ╠═══════════════════════════════════════════════════════╣
 ║  Monitoring: Atlanta, Seattle, NYC, London,           ║
 ║              Seoul, Toronto, Dallas                   ║
-║  Poll Interval: Every 10 minutes (:00:10, :10:10...)  ║
+║  Poll Interval: Every 5 minutes (:00:10, :05:10...)   ║
 ╚═══════════════════════════════════════════════════════╝
 `);
 

@@ -263,23 +263,23 @@ async function fetchWeatherData(location) {
 
 /**
  * Extract current temperature from API response
- * API structure: { success: true, data: { current: { temperature: { celsius: X } } } }
+ * PRIORITY: Use most recent hourly_data entry (more up-to-date than 'current' which may be cached)
  */
 function extractCurrentTemp(apiResponse) {
   // The API wraps everything in { success, data }
   const data = apiResponse?.data || apiResponse;
   
-  // Primary path: data.current.temperature.celsius
-  if (typeof data?.current?.temperature?.celsius === 'number') {
-    return data.current.temperature.celsius;
-  }
-  
-  // Fallback: check for hourly_data and get the latest
+  // PRIMARY: Use the most recent hourly_data entry (more reliable/recent than 'current')
   if (data?.hourly_data && Array.isArray(data.hourly_data) && data.hourly_data.length > 0) {
     const latest = data.hourly_data[data.hourly_data.length - 1];
     if (typeof latest?.temperature_c === 'number') {
       return latest.temperature_c;
     }
+  }
+  
+  // Fallback: data.current.temperature.celsius (may be cached/stale)
+  if (typeof data?.current?.temperature?.celsius === 'number') {
+    return data.current.temperature.celsius;
   }
   
   // Other fallbacks
@@ -575,7 +575,7 @@ async function handleStatus(chatId) {
 
 /**
  * Calculate milliseconds until next poll time
- * Polls at :00:10, :10:10, :20:10, etc. (every 10 minutes with 10 second offset)
+ * Polls at :00:10, :05:10, :10:10, etc. (every 5 minutes with 10 second offset)
  */
 function getMillisUntilNextPoll() {
   const now = new Date();
@@ -583,8 +583,8 @@ function getMillisUntilNextPoll() {
   const seconds = now.getSeconds();
   const ms = now.getMilliseconds();
   
-  // Find next 10-minute interval
-  const nextInterval = Math.ceil(minutes / 10) * 10;
+  // Find next 5-minute interval
+  const nextInterval = Math.ceil(minutes / 5) * 5;
   const minutesToWait = nextInterval - minutes;
   
   // Calculate target time (next interval + 10 seconds)
@@ -592,7 +592,7 @@ function getMillisUntilNextPoll() {
   
   // If we're past the 10-second mark of current interval, wait for next
   if (targetMs <= 0) {
-    targetMs += 10 * 60 * 1000; // Add 10 minutes
+    targetMs += 5 * 60 * 1000; // Add 5 minutes
   }
   
   return targetMs;
