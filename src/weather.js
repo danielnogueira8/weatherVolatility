@@ -602,6 +602,11 @@ async function processLocation(location) {
   // This ensures we detect new highs/drops on the current day
   const state = loadLocationState(location.id, actualLocalDate);
   
+  // Debug: Log state info
+  if (state.highTemp !== null) {
+    console.log(`   📊 ${location.name} state: date=${actualLocalDate}, highTemp=${state.highTemp}°C, currentTemp=${currentTemp}°C`);
+  }
+  
   // Determine the high to display:
   // - If we have a tracked high, use the MAX of (our tracked high, current temp)
   // - If no tracked high yet (first reading), use current temp
@@ -837,17 +842,23 @@ function formatAlert(alert) {
  * Main polling function - processes all locations
  */
 export async function pollAllLocations() {
-  debugLog(`\n⏰ POLL @ ${new Date().toISOString()}`);
+  const pollTime = new Date().toISOString();
+  console.log(`\n⏰⏰⏰ POLLING ALL LOCATIONS @ ${pollTime} ⏰⏰⏰`);
+  debugLog(`\n⏰ POLL @ ${pollTime}`);
   
   const allAlerts = [];
   
   for (const location of locations) {
     try {
       const alerts = await processLocation(location);
-      if (alerts) {
+      if (alerts && alerts.length > 0) {
+        console.log(`   ✅ ${location.name}: Generated ${alerts.length} alert(s)`);
         allAlerts.push(...alerts);
+      } else {
+        debugLog(`   ✓ ${location.name}: No alerts`);
       }
     } catch (err) {
+      console.error(`   ❌ ${location.name}: ${err.message}`);
       debugLog(`❌ ${location.name}: ${err.message}`);
     }
     
@@ -857,19 +868,24 @@ export async function pollAllLocations() {
   
   // Send alerts to users who have each market enabled
   if (allAlerts.length > 0) {
-    console.log(`\n🚨 SENDING ${allAlerts.length} ALERT(S) TO TELEGRAM:`);
+    console.log(`\n🚨🚨🚨 SENDING ${allAlerts.length} ALERT(S) TO TELEGRAM 🚨🚨🚨`);
     for (const alert of allAlerts) {
       const message = formatAlert(alert);
       if (message) {
-        console.log(`   📤 Broadcasting ${alert.type} alert for ${alert.location.name}...`);
+        console.log(`   📤 Broadcasting ${alert.type} alert for ${alert.location.name} (${alert.location.id})...`);
+        console.log(`   📝 Message preview: ${message.substring(0, 100)}...`);
         const sentCount = await broadcastMessage(message, alert.location.id);
-        console.log(`   ✅ Sent to ${sentCount} user(s)`);
+        console.log(`   ✅ Sent to ${sentCount} user(s) for ${alert.location.name}`);
+        if (sentCount === 0) {
+          console.log(`   ⚠️ WARNING: Alert detected but sent to 0 users! Check if users have ${alert.location.id} enabled.`);
+        }
         debugLog(`📤 ${alert.location.name} alert → ${sentCount} user(s)`);
       } else {
         console.log(`   ⚠️ Empty message for ${alert.location.name} alert`);
       }
     }
   } else {
+    console.log(`✅ No alerts detected in this poll cycle.`);
     debugLog(`✅ No alerts to send.`);
   }
   
