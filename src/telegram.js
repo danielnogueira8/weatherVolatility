@@ -4,10 +4,11 @@
  */
 
 import TelegramBot from 'node-telegram-bot-api';
+import moment from 'moment-timezone';
 import { TELEGRAM_BOT_TOKEN } from '../config/telegram.js';
 import { addUser, removeUser, loadUsers, getUser, toggleUserMarket, getUsersForMarket } from './state.js';
 import { locations } from '../config/locations.js';
-import { getAllAttentionZonesWithLisbon, fetchWeatherData, extractCurrentTemp, getLocalTime } from './weather.js';
+import { getAllAttentionZonesWithLisbon, fetchLatestWeatherData, extractCurrentTemp, getLocalTime } from './weather.js';
 
 let bot = null;
 
@@ -343,8 +344,8 @@ function startTracking(chatId, locationId, location) {
       
       const tracking = userTrackings.get(locationId);
       
-      // Fetch current data (force fresh to avoid cache)
-      const result = await fetchWeatherData(location, true);
+      // Fetch latest data using /latest endpoint (more accurate for real-time)
+      const result = await fetchLatestWeatherData(location);
       
       if (!result.success) {
         // Update message with error
@@ -371,13 +372,19 @@ function startTracking(chatId, locationId, location) {
       const localTime = getLocalTime(location.timezone);
       const checkTime = new Date().toLocaleTimeString();
       
-      // Debug: Log what we got from API
+      // Extract timestamp from /latest endpoint response
       const apiData = result.data?.data || result.data;
       const apiCurrent = apiData?.current?.temperature?.celsius;
-      const hourlyData = apiData?.hourly_data || [];
-      const latestHourly = hourlyData.length > 0 ? hourlyData[hourlyData.length - 1] : null;
-      const lastRecordedTime = latestHourly?.time || null;
-      console.log(`   🔍 ${location.name} tracking: API current=${apiCurrent}°C, hourly[last]=${latestHourly?.temperature_c}°C, extracted=${currentTemp}°C`);
+      const timestamp = apiData?.timestamp;
+      
+      // Convert timestamp to local time format
+      let lastRecordedTime = null;
+      if (timestamp) {
+        const localMoment = moment(timestamp).tz(location.timezone);
+        lastRecordedTime = localMoment.format('h:mm A');
+      }
+      
+      console.log(`   🔍 ${location.name} tracking: API current=${apiCurrent}°C, extracted=${currentTemp}°C, timestamp=${timestamp}`);
       
       if (currentTemp === null) {
         // Update message with no data

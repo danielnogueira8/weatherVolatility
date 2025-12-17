@@ -379,6 +379,29 @@ export function getLocalTime(timezone) {
  * Fetch weather data for a location
  * Handles timezone edge cases where local date might be "future" for the API
  */
+/**
+ * Fetch latest weather data using the /latest endpoint
+ * More accurate for real-time tracking
+ */
+export async function fetchLatestWeatherData(location) {
+  const baseUrl = API_BASE_URL.replace('/api/weather/history', '');
+  const url = `${baseUrl}/api/weather/latest?location=${location.apiPath}`;
+  
+  try {
+    const response = await axios.get(url, { timeout: 10000 });
+    return {
+      success: true,
+      data: response.data
+    };
+  } catch (err) {
+    console.error(`Error fetching latest data for ${location.name}:`, err.message);
+    return {
+      success: false,
+      error: err.message
+    };
+  }
+}
+
 export async function fetchWeatherData(location, forceFresh = false) {
   const localDate = getLocalDate(location.timezone);
   let url = `${API_BASE_URL}?location=${location.apiPath}&date=${localDate}`;
