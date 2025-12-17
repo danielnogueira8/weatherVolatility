@@ -373,11 +373,16 @@ async function processLocation(location) {
   debugLog(`   📊 high=${state.highTemp}°C last=${state.lastTemp}°C drop=${state.hasAlertedDrop}`);
   debugLog(`   🌡️ cur=${currentTemp}°C disp=${displayHigh}°C`);
   
+  // Check if we're in the attention zone
+  const inAttentionZone = isInCriticalWindow(location.timezone, location.id);
+  
   // Check for new high (based on our tracked observations)
   if (currentTemp > state.highTemp) {
     const prevHigh = state.highTemp;
     state.highTemp = currentTemp;
     state.hasAlertedDrop = false; // Reset drop alert flag for new high
+    state.sustainedHighCount = 1; // Reset sustained count for new high
+    state.lastHighAlertTemp = currentTemp; // Track what temp we alerted for
     
     alerts.push({
       type: 'new_high',
@@ -393,6 +398,7 @@ async function processLocation(location) {
   // Check for first drop from high
   else if (currentTemp < state.highTemp && !state.hasAlertedDrop) {
     state.hasAlertedDrop = true;
+    state.sustainedHighCount = 0; // Reset sustained count on drop
     
     alerts.push({
       type: 'drop',
@@ -404,6 +410,28 @@ async function processLocation(location) {
     });
     
     debugLog(`   🚨 DROP to ${currentTemp}°C (high ${state.highTemp}°C)`);
+  }
+  // Check for sustained high during attention zone (temp equals current high)
+  else if (inAttentionZone && currentTemp === state.highTemp && !state.hasAlertedDrop) {
+    // Initialize if not set
+    if (!state.sustainedHighCount) state.sustainedHighCount = 1;
+    
+    // Increment sustained count
+    state.sustainedHighCount++;
+    
+    // Alert for sustained highs (2nd occurrence and beyond)
+    if (state.sustainedHighCount >= 2) {
+      alerts.push({
+        type: 'sustained_high',
+        location,
+        temp: currentTemp,
+        count: state.sustainedHighCount,
+        time: localTime,
+        date: actualLocalDate
+      });
+      
+      debugLog(`   🔥 SUSTAINED HIGH x${state.sustainedHighCount} at ${currentTemp}°C`);
+    }
   } else {
     debugLog(`   ✓ No alert`);
   }
@@ -504,6 +532,23 @@ function formatAlert(alert) {
         `🕐 Time: ${time} (${dateFormatted})`
       );
     }
+  }
+  
+  // Sustained high during attention zone
+  if (alert.type === 'sustained_high') {
+    const ordinal = alert.count === 2 ? '2nd' : alert.count === 3 ? '3rd' : `${alert.count}th`;
+    return (
+      `🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥\n` +
+      `🎯 *HIGH HOLDING STRONG* 🎯\n` +
+      `🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥\n\n` +
+      `${location.emoji} *${location.name}*\n\n` +
+      `🌡️ *${temp}°C* — ${ordinal} reading at peak\n` +
+      `📊 Sustained high during attention zone\n` +
+      `🕐 ${time} (${dateFormatted})\n\n` +
+      `━━━━━━━━━━━━━━━━━━━━━━\n` +
+      `⏰ *PEAK WINDOW: ${zoneInfo}*\n` +
+      `━━━━━━━━━━━━━━━━━━━━━━`
+    );
   }
   
   return '';
