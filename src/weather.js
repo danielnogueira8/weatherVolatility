@@ -795,14 +795,93 @@ export async function pollAllLocations() {
 }
 
 /**
+ * Fetch current data for a location (for /status fallback)
+ */
+async function fetchCurrentDataForStatus(location) {
+  const result = await fetchWeatherData(location);
+  
+  if (!result.success) {
+    return null;
+  }
+  
+  const currentTemp = extractCurrentTemp(result.data);
+  const dailyHigh = extractDailyHigh(result.data);
+  
+  if (currentTemp === null) {
+    return null;
+  }
+  
+  const actualLocalDate = getLocalDate(location.timezone);
+  const localTime = getLocalTime(location.timezone);
+  const apiDate = result.localDate;
+  const state = loadLocationState(location.id, apiDate);
+  
+  const displayHigh = state.highTemp !== null 
+    ? Math.max(state.highTemp, currentTemp) 
+    : currentTemp;
+  
+  return {
+    temp: currentTemp,
+    time: localTime,
+    date: actualLocalDate,
+    high: displayHigh,
+    isFallback: result.isFallback || false
+  };
+}
+
+/**
  * Handle /status command
  */
 async function handleStatus(chatId) {
+  // If no cached data, fetch fresh from API
   if (currentReadings.size === 0) {
-    await sendMessage(chatId, '⏳ No data yet. Waiting for first poll...');
+    await sendMessage(chatId, '⏳ Fetching current data from API...');
+    
+    // Fetch data for all locations
+    const readings = {};
+    for (const location of locations) {
+      try {
+        const reading = await fetchCurrentDataForStatus(location);
+        if (reading) {
+          readings[location.id] = reading;
+        }
+        // Small delay to avoid rate limiting
+        await new Promise(resolve => setTimeout(resolve, 200));
+      } catch (err) {
+        console.error(`Error fetching status for ${location.name}:`, err.message);
+      }
+    }
+    
+    // If still no data, show error
+    if (Object.keys(readings).length === 0) {
+      await sendMessage(chatId, '❌ Unable to fetch data. Please try again in a moment.');
+      return;
+    }
+    
+    // Use fetched data
+    let message = '🌡️ *Current Temperatures*\n\n';
+    
+    for (const location of locations) {
+      const reading = readings[location.id];
+      
+      if (reading) {
+        const highInfo = reading.high !== null ? ` (High: ${reading.high}°C)` : '';
+        const fallbackNote = reading.isFallback ? ' ⏳' : '';
+        message += `${location.emoji} *${location.name}*: ${reading.temp}°C${highInfo}${fallbackNote}\n`;
+        message += `   └ ${reading.time} • ${reading.date}\n\n`;
+      } else {
+        message += `${location.emoji} *${location.name}*: No data\n\n`;
+      }
+    }
+    
+    message += `_Fetched: ${new Date().toLocaleTimeString()}_\n`;
+    message += `_⏳ = Data from previous day (new day data pending)_`;
+    
+    await sendMessage(chatId, message);
     return;
   }
   
+  // Use cached data
   let message = '🌡️ *Current Temperatures*\n\n';
   
   for (const location of locations) {
