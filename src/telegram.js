@@ -343,8 +343,8 @@ function startTracking(chatId, locationId, location) {
       
       const tracking = userTrackings.get(locationId);
       
-      // Fetch current data
-      const result = await fetchWeatherData(location);
+      // Fetch current data (force fresh to avoid cache)
+      const result = await fetchWeatherData(location, true);
       
       if (!result.success) {
         // Update message with error
@@ -370,6 +370,13 @@ function startTracking(chatId, locationId, location) {
       const currentTemp = extractCurrentTemp(result.data);
       const localTime = getLocalTime(location.timezone);
       const checkTime = new Date().toLocaleTimeString();
+      
+      // Debug: Log what we got from API
+      const apiData = result.data?.data || result.data;
+      const apiCurrent = apiData?.current?.temperature?.celsius;
+      const hourlyData = apiData?.hourly_data || [];
+      const latestHourly = hourlyData.length > 0 ? hourlyData[hourlyData.length - 1] : null;
+      console.log(`   🔍 ${location.name} tracking: API current=${apiCurrent}°C, hourly[last]=${latestHourly?.temperature_c}°C, extracted=${currentTemp}°C`);
       
       if (currentTemp === null) {
         // Update message with no data

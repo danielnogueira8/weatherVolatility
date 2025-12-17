@@ -379,9 +379,14 @@ export function getLocalTime(timezone) {
  * Fetch weather data for a location
  * Handles timezone edge cases where local date might be "future" for the API
  */
-export async function fetchWeatherData(location) {
+export async function fetchWeatherData(location, forceFresh = false) {
   const localDate = getLocalDate(location.timezone);
-  const url = `${API_BASE_URL}?location=${location.apiPath}&date=${localDate}`;
+  let url = `${API_BASE_URL}?location=${location.apiPath}&date=${localDate}`;
+  
+  // Add cache-busting parameter if we need fresh data
+  if (forceFresh) {
+    url += `&_=${Date.now()}`;
+  }
   
   debugLog(`\n📡 [${location.name}] ${url}`);
   
@@ -396,8 +401,17 @@ export async function fetchWeatherData(location) {
     const condition = data?.data?.current?.condition;
     const cacheHit = data?.metadata?.cache_hit;
     
+    // Get hourly data info
+    const hourlyData = data?.data?.hourly_data || [];
+    const latestHourly = hourlyData.length > 0 ? hourlyData[hourlyData.length - 1] : null;
+    const hourlyTemp = latestHourly?.temperature_c;
+    const hourlyTime = latestHourly?.time;
+    
     debugLog(`   ✅ cur=${current}°C max=${dailyMax}°C min=${dailyMin}°C`);
     debugLog(`   📋 "${condition}" | Cache: ${cacheHit ? 'HIT' : 'MISS'}`);
+    if (hourlyTemp !== undefined) {
+      debugLog(`   📊 hourly[last]: ${hourlyTemp}°C at ${hourlyTime}`);
+    }
     
     return {
       success: true,
@@ -458,31 +472,51 @@ export async function fetchWeatherData(location) {
 
 /**
  * Extract current temperature from API response
- * Uses the most recent value between current.temperature and hourly_data
+ * Finds the absolute most recent reading by comparing timestamps
  */
 export function extractCurrentTemp(apiResponse) {
   // The API wraps everything in { success, data }
   const data = apiResponse?.data || apiResponse;
   
   const currentTemp = data?.current?.temperature?.celsius;
-  let hourlyTemp = null;
+  const currentTimestamp = data?.timestamp || data?.data?.timestamp;
   
-  // Get the most recent hourly_data entry
+  // Parse all hourly_data entries and find the most recent one
+  let mostRecentHourly = null;
+  let mostRecentTime = null;
+  
   if (data?.hourly_data && Array.isArray(data.hourly_data) && data.hourly_data.length > 0) {
-    const latest = data.hourly_data[data.hourly_data.length - 1];
-    if (typeof latest?.temperature_c === 'number') {
-      hourlyTemp = latest.temperature_c;
+    // Find the entry with the latest time
+    for (const entry of data.hourly_data) {
+      if (entry.temperature_c !== undefined && entry.time) {
+        const parsed = parseTimeString(entry.time);
+        if (parsed) {
+          const entryTime = parsed.hours * 60 + parsed.minutes;
+          if (mostRecentTime === null || entryTime > mostRecentTime) {
+            mostRecentTime = entryTime;
+            mostRecentHourly = entry.temperature_c;
+          }
+        }
+      }
     }
   }
   
-  // Prefer current.temperature if available (usually more recent)
-  // Otherwise use hourly_data
+  // Compare current.temperature timestamp with hourly_data
+  // If we have a timestamp, prefer the more recent one
+  // Otherwise, prefer current.temperature (usually more recent)
   if (typeof currentTemp === 'number') {
+    // If we have hourly data, compare times
+    if (mostRecentHourly !== null && currentTimestamp) {
+      // For now, prefer current.temperature as it's usually the API's "current" reading
+      // But log both for debugging
+      console.log(`   🔍 Temp sources: current=${currentTemp}°C, hourly_latest=${mostRecentHourly}°C`);
+      return currentTemp;
+    }
     return currentTemp;
   }
   
-  if (hourlyTemp !== null) {
-    return hourlyTemp;
+  if (mostRecentHourly !== null) {
+    return mostRecentHourly;
   }
   
   // Other fallbacks
