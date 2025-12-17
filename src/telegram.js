@@ -376,6 +376,7 @@ function startTracking(chatId, locationId, location) {
       const apiCurrent = apiData?.current?.temperature?.celsius;
       const hourlyData = apiData?.hourly_data || [];
       const latestHourly = hourlyData.length > 0 ? hourlyData[hourlyData.length - 1] : null;
+      const lastRecordedTime = latestHourly?.time || null;
       console.log(`   🔍 ${location.name} tracking: API current=${apiCurrent}°C, hourly[last]=${latestHourly?.temperature_c}°C, extracted=${currentTemp}°C`);
       
       if (currentTemp === null) {
@@ -401,11 +402,16 @@ function startTracking(chatId, locationId, location) {
       const tempChanged = tracking.lastTemp !== null && tracking.lastTemp !== currentTemp;
       
       // Update the tracking message with latest check
+      const lastRecordedLine = lastRecordedTime 
+        ? `📅 Last recorded: ${lastRecordedTime}\n` 
+        : '';
+      
       try {
         await bot.editMessageText(
           `🔍 *Tracking ${location.emoji} ${location.name}*\n\n` +
           `🌡️ Temperature: *${currentTemp}°C*\n` +
           `🕐 Local time: ${localTime}\n` +
+          `${lastRecordedLine}` +
           `_Last check: ${checkTime}_`,
           {
             chat_id: chatId,
@@ -424,11 +430,16 @@ function startTracking(chatId, locationId, location) {
         const change = currentTemp > tracking.lastTemp ? '↑' : '↓';
         const changeAmount = Math.abs(currentTemp - tracking.lastTemp);
         
+        const lastRecordedLine = lastRecordedTime 
+          ? `📅 Last recorded: ${lastRecordedTime}\n` 
+          : '';
+        
         await bot.sendMessage(chatId,
           `📊 *NEW DATA POINT*\n\n` +
           `${location.emoji} *${location.name}*\n\n` +
           `🌡️ Temperature: *${currentTemp}°C* ${change}${changeAmount}°C\n` +
           `📊 Previous: ${tracking.lastTemp}°C\n` +
+          `${lastRecordedLine}` +
           `🕐 ${localTime}\n` +
           `🕐 Checked: ${checkTime}`,
           { parse_mode: 'Markdown' }
