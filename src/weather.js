@@ -532,7 +532,6 @@ export function extractCurrentTemp(apiResponse) {
     if (mostRecentHourly !== null && currentTimestamp) {
       // For now, prefer current.temperature as it's usually the API's "current" reading
       // But log both for debugging
-      console.log(`   🔍 Temp sources: current=${currentTemp}°C, hourly_latest=${mostRecentHourly}°C`);
       return currentTemp;
     }
     return currentTemp;
@@ -592,6 +591,13 @@ async function processLocation(location) {
     return null;
   }
   
+  // Ensure currentTemp is a number
+  const currentTempNum = Number(currentTemp);
+  if (isNaN(currentTempNum)) {
+    debugLog(`⚠️ Invalid temperature for ${location.name}: ${currentTemp}`);
+    return null;
+  }
+  
   // Use actual local date for state management (not API fallback date)
   // This ensures we track today's state even if API hasn't updated yet
   const actualLocalDate = getLocalDate(location.timezone);
@@ -602,21 +608,16 @@ async function processLocation(location) {
   // This ensures we detect new highs/drops on the current day
   const state = loadLocationState(location.id, actualLocalDate);
   
-  // Debug: Log state info
-  if (state.highTemp !== null) {
-    console.log(`   📊 ${location.name} state: date=${actualLocalDate}, highTemp=${state.highTemp}°C, currentTemp=${currentTemp}°C`);
-  }
-  
   // Determine the high to display:
   // - If we have a tracked high, use the MAX of (our tracked high, current temp)
   // - If no tracked high yet (first reading), use current temp
   const displayHigh = state.highTemp !== null 
-    ? Math.max(state.highTemp, currentTemp) 
-    : currentTemp;
+    ? Math.max(Number(state.highTemp), currentTempNum) 
+    : currentTempNum;
   
   // Store for /status command
   currentReadings.set(location.id, {
-    temp: currentTemp,
+    temp: currentTempNum,
     time: localTime,
     date: actualLocalDate,  // Show actual local date, not API fallback date
     high: displayHigh,      // Use our tracked/observed high
@@ -628,62 +629,63 @@ async function processLocation(location) {
   
   // First reading of the day - establish baseline silently
   if (state.highTemp === null) {
-    state.highTemp = currentTemp;
-    state.lastTemp = currentTemp;
+    state.highTemp = currentTempNum;
+    state.lastTemp = currentTempNum;
     state.hasAlertedDrop = false;
-    state.history.push({ temp: currentTemp, time: localTime });
+    state.history.push({ temp: currentTempNum, time: localTime });
     saveLocationState(location.id, actualLocalDate, state);
     
-    debugLog(`   📊 BASELINE: ${currentTemp}°C`);
+    debugLog(`   📊 BASELINE: ${currentTempNum}°C`);
     return null;
   }
   
   // Log current state
   debugLog(`   📊 high=${state.highTemp}°C last=${state.lastTemp}°C drop=${state.hasAlertedDrop}`);
-  debugLog(`   🌡️ cur=${currentTemp}°C disp=${displayHigh}°C`);
+  debugLog(`   🌡️ cur=${currentTempNum}°C disp=${displayHigh}°C`);
   
   // Check if we're in the attention zone
   const inAttentionZone = isInCriticalWindow(location.timezone, location.id);
   
+  // Ensure highTemp is a number for comparison
+  const highTempNum = Number(state.highTemp);
+  
   // Check for new high (based on our tracked observations)
-  if (currentTemp > state.highTemp) {
+  if (!isNaN(currentTempNum) && !isNaN(highTempNum) && currentTempNum > highTempNum) {
     const prevHigh = state.highTemp;
-    state.highTemp = currentTemp;
+    state.highTemp = currentTempNum;
     state.hasAlertedDrop = false; // Reset drop alert flag for new high
     state.sustainedHighCount = 1; // Reset sustained count for new high
-    state.lastHighAlertTemp = currentTemp; // Track what temp we alerted for
+    state.lastHighAlertTemp = currentTempNum; // Track what temp we alerted for
     
     alerts.push({
       type: 'new_high',
       location,
-      temp: currentTemp,
+      temp: currentTempNum,
       prevHigh,
       time: localTime,
       date: actualLocalDate
     });
     
-    console.log(`   🚨🚨🚨 ALERT DETECTED: ${location.name} NEW HIGH ${currentTemp}°C (was ${prevHigh}°C)`);
-    debugLog(`   🚨 NEW HIGH ${currentTemp}°C (was ${prevHigh}°C)`);
+    debugLog(`   🚨 NEW HIGH ${currentTempNum}°C (was ${prevHigh}°C)`);
   }
   // Check for first drop from high
-  else if (currentTemp < state.highTemp && !state.hasAlertedDrop) {
+  else if (!isNaN(currentTempNum) && !isNaN(highTempNum) && currentTempNum < highTempNum && !state.hasAlertedDrop) {
     state.hasAlertedDrop = true;
     state.sustainedHighCount = 0; // Reset sustained count on drop
     
     alerts.push({
       type: 'drop',
       location,
-      temp: currentTemp,
-      high: state.highTemp,
+      temp: currentTempNum,
+      high: highTempNum,
       time: localTime,
       date: actualLocalDate
     });
     
-    console.log(`   🚨🚨🚨 ALERT DETECTED: ${location.name} DROP to ${currentTemp}°C (high ${state.highTemp}°C)`);
-    debugLog(`   🚨 DROP to ${currentTemp}°C (high ${state.highTemp}°C)`);
+    debugLog(`   🚨 DROP to ${currentTempNum}°C (high ${highTempNum}°C)`);
   }
   // Check for sustained high during attention zone (temp equals current high)
-  else if (inAttentionZone && currentTemp === state.highTemp && !state.hasAlertedDrop) {
+  else if (inAttentionZone && !isNaN(currentTempNum) && !isNaN(highTempNum) && currentTempNum === highTempNum && !state.hasAlertedDrop) {
     // Initialize if not set
     if (!state.sustainedHighCount) state.sustainedHighCount = 1;
     
@@ -695,21 +697,21 @@ async function processLocation(location) {
       alerts.push({
         type: 'sustained_high',
         location,
-        temp: currentTemp,
+        temp: currentTempNum,
         count: state.sustainedHighCount,
         time: localTime,
         date: actualLocalDate
       });
       
-      debugLog(`   🔥 SUSTAINED HIGH x${state.sustainedHighCount} at ${currentTemp}°C`);
+      debugLog(`   🔥 SUSTAINED HIGH x${state.sustainedHighCount} at ${currentTempNum}°C`);
     }
   } else {
     debugLog(`   ✓ No alert`);
   }
   
   // Update state (always use actual local date)
-  state.lastTemp = currentTemp;
-  state.history.push({ temp: currentTemp, time: localTime });
+  state.lastTemp = currentTempNum;
+  state.history.push({ temp: currentTempNum, time: localTime });
   saveLocationState(location.id, actualLocalDate, state);
   
   return alerts.length > 0 ? alerts : null;
@@ -842,9 +844,7 @@ function formatAlert(alert) {
  * Main polling function - processes all locations
  */
 export async function pollAllLocations() {
-  const pollTime = new Date().toISOString();
-  console.log(`\n⏰⏰⏰ POLLING ALL LOCATIONS @ ${pollTime} ⏰⏰⏰`);
-  debugLog(`\n⏰ POLL @ ${pollTime}`);
+  debugLog(`\n⏰ POLL @ ${new Date().toISOString()}`);
   
   const allAlerts = [];
   
@@ -852,13 +852,9 @@ export async function pollAllLocations() {
     try {
       const alerts = await processLocation(location);
       if (alerts && alerts.length > 0) {
-        console.log(`   ✅ ${location.name}: Generated ${alerts.length} alert(s)`);
         allAlerts.push(...alerts);
-      } else {
-        debugLog(`   ✓ ${location.name}: No alerts`);
       }
     } catch (err) {
-      console.error(`   ❌ ${location.name}: ${err.message}`);
       debugLog(`❌ ${location.name}: ${err.message}`);
     }
     
@@ -868,24 +864,14 @@ export async function pollAllLocations() {
   
   // Send alerts to users who have each market enabled
   if (allAlerts.length > 0) {
-    console.log(`\n🚨🚨🚨 SENDING ${allAlerts.length} ALERT(S) TO TELEGRAM 🚨🚨🚨`);
     for (const alert of allAlerts) {
       const message = formatAlert(alert);
       if (message) {
-        console.log(`   📤 Broadcasting ${alert.type} alert for ${alert.location.name} (${alert.location.id})...`);
-        console.log(`   📝 Message preview: ${message.substring(0, 100)}...`);
-        const sentCount = await broadcastMessage(message, alert.location.id);
-        console.log(`   ✅ Sent to ${sentCount} user(s) for ${alert.location.name}`);
-        if (sentCount === 0) {
-          console.log(`   ⚠️ WARNING: Alert detected but sent to 0 users! Check if users have ${alert.location.id} enabled.`);
-        }
-        debugLog(`📤 ${alert.location.name} alert → ${sentCount} user(s)`);
-      } else {
-        console.log(`   ⚠️ Empty message for ${alert.location.name} alert`);
+        await broadcastMessage(message, alert.location.id);
+        debugLog(`📤 ${alert.location.name} alert sent`);
       }
     }
   } else {
-    console.log(`✅ No alerts detected in this poll cycle.`);
     debugLog(`✅ No alerts to send.`);
   }
   

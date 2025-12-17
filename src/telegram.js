@@ -507,16 +507,9 @@ export function setStatusHandler(handler) {
  */
 export async function broadcastMessage(message, marketId = null, options = {}) {
   // Get users who have this market enabled (or all users if no marketId)
-  const allUsers = loadUsers();
-  const users = marketId ? getUsersForMarket(marketId) : allUsers;
-  
-  console.log(`   👥 Total users: ${allUsers.length}, Users for ${marketId || 'all'}: ${users.length}`);
+  const users = marketId ? getUsersForMarket(marketId) : loadUsers();
   
   if (users.length === 0) {
-    console.log(`   ⚠️ WARNING: No users to broadcast to${marketId ? ` for ${marketId}` : ''}`);
-    if (marketId && allUsers.length > 0) {
-      console.log(`   💡 Tip: Users might have ${marketId} disabled. Check /markets command.`);
-    }
     return 0;
   }
   
