@@ -59,6 +59,24 @@ async function fetchHistoricalData(location, date) {
 }
 
 /**
+ * Fetch analyzed temperature data for last N days
+ * Uses the analysis endpoint: /api/analysis/temperature
+ */
+async function fetchTemperatureAnalysis(location, days = 7) {
+  const baseUrl = API_BASE_URL.replace('/api/weather/history', '');
+  const url = `${baseUrl}/api/analysis/temperature?location=${location.apiPath}&days=${days}`;
+  
+  try {
+    debugLog(`   📊 Fetching analysis for ${location.name} (last ${days} days)...`);
+    const response = await axios.get(url, { timeout: 15000 });
+    return response.data;
+  } catch (err) {
+    debugLog(`   ❌ Analysis fetch failed: ${err.message}`);
+    return null;
+  }
+}
+
+/**
  * Find when the daily high occurred from hourly data
  * Returns the hour (0-23) when the max temperature was recorded
  */
@@ -110,35 +128,108 @@ function countSustainedHighReadings(hourlyData) {
 }
 
 /**
+ * Parse analysis endpoint response to extract high times and sustained counts
+ * Handles different possible response structures
+ */
+function parseAnalysisData(analysisData, location) {
+  const highTimes = [];
+  const sustainedCounts = [];
+  
+  // Try different possible response structures
+  const dailyData = analysisData?.data || analysisData?.daily || analysisData?.days || [];
+  
+  if (!Array.isArray(dailyData)) {
+    return { highTimes: [], sustainedCounts: [] };
+  }
+  
+  for (const day of dailyData) {
+    // Try to find high temperature time
+    let highHour = null;
+    let sustainedCount = 0;
+    
+    // Check if analysis already provides high time
+    if (day.high_time) {
+      const parsed = parseTimeString(day.high_time);
+      if (parsed) highHour = parsed.hours;
+    } else if (day.max_time) {
+      const parsed = parseTimeString(day.max_time);
+      if (parsed) highHour = parsed.hours;
+    } else if (day.hourly_data) {
+      // Fallback: calculate from hourly data
+      highHour = findHighTempTime(day.hourly_data);
+      sustainedCount = countSustainedHighReadings(day.hourly_data);
+    }
+    
+    // Get sustained count if available
+    if (day.sustained_count !== undefined) {
+      sustainedCount = day.sustained_count;
+    } else if (day.high_duration_readings !== undefined) {
+      sustainedCount = day.high_duration_readings;
+    }
+    
+    if (highHour !== null) {
+      highTimes.push(highHour);
+      if (sustainedCount > 0) {
+        sustainedCounts.push(sustainedCount);
+      }
+    }
+  }
+  
+  return { highTimes, sustainedCounts };
+}
+
+/**
  * Calculate the attention zone for a location based on last 7 days
+ * Uses the analysis endpoint for better accuracy
  * Also calculates average sustained high count
  * Returns a 3-hour window centered around the most common high time
  */
 async function calculateAttentionZone(location) {
   debugLog(`\n📊 Calculating attention zone for ${location.name}...`);
   
-  const highTimes = [];
-  const sustainedCounts = [];
-  const today = moment().tz(location.timezone);
+  // Try analysis endpoint first (more efficient)
+  const analysisData = await fetchTemperatureAnalysis(location, 7);
   
-  // Fetch last 7 days of data
-  for (let i = 1; i <= 7; i++) {
-    const date = today.clone().subtract(i, 'days').format('YYYY-MM-DD');
-    const data = await fetchHistoricalData(location, date);
+  let highTimes = [];
+  let sustainedCounts = [];
+  
+  if (analysisData) {
+    const parsed = parseAnalysisData(analysisData, location);
+    highTimes = parsed.highTimes;
+    sustainedCounts = parsed.sustainedCounts;
     
-    if (data?.data?.hourly_data) {
-      const highHour = findHighTempTime(data.data.hourly_data);
-      const sustainedCount = countSustainedHighReadings(data.data.hourly_data);
-      
-      if (highHour !== null) {
-        highTimes.push(highHour);
-        sustainedCounts.push(sustainedCount);
-        debugLog(`   ${date}: High at ${highHour}:00, sustained for ${sustainedCount} readings`);
-      }
+    if (highTimes.length > 0) {
+      debugLog(`   ✅ Analysis endpoint: Found ${highTimes.length} days of data`);
+      highTimes.forEach((hour, idx) => {
+        const count = sustainedCounts[idx] || 0;
+        debugLog(`   Day ${idx + 1}: High at ${hour}:00, sustained ${count} readings`);
+      });
     }
+  }
+  
+  // Fallback to individual date fetches if analysis endpoint fails or returns no data
+  if (highTimes.length === 0) {
+    debugLog(`   ⚠️ Analysis endpoint unavailable, using individual date fetches...`);
+    const today = moment().tz(location.timezone);
     
-    // Small delay to avoid rate limiting
-    await new Promise(resolve => setTimeout(resolve, 300));
+    for (let i = 1; i <= 7; i++) {
+      const date = today.clone().subtract(i, 'days').format('YYYY-MM-DD');
+      const data = await fetchHistoricalData(location, date);
+      
+      if (data?.data?.hourly_data) {
+        const highHour = findHighTempTime(data.data.hourly_data);
+        const sustainedCount = countSustainedHighReadings(data.data.hourly_data);
+        
+        if (highHour !== null) {
+          highTimes.push(highHour);
+          sustainedCounts.push(sustainedCount);
+          debugLog(`   ${date}: High at ${highHour}:00, sustained for ${sustainedCount} readings`);
+        }
+      }
+      
+      // Small delay to avoid rate limiting
+      await new Promise(resolve => setTimeout(resolve, 300));
+    }
   }
   
   if (highTimes.length === 0) {
