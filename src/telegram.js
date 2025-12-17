@@ -7,7 +7,7 @@ import TelegramBot from 'node-telegram-bot-api';
 import { TELEGRAM_BOT_TOKEN } from '../config/telegram.js';
 import { addUser, removeUser, loadUsers, getUser, toggleUserMarket, getUsersForMarket } from './state.js';
 import { locations } from '../config/locations.js';
-import { getAllAttentionZones } from './weather.js';
+import { getAllAttentionZonesWithLisbon } from './weather.js';
 
 let bot = null;
 
@@ -160,28 +160,31 @@ export function initBot() {
     }
   });
   
-  // Handle /timezone command - show dynamic attention zones
+  // Handle /timezone command - show dynamic attention zones in Lisbon time
   bot.onText(/\/timezone/, (msg) => {
     const chatId = msg.chat.id;
     
-    const zones = getAllAttentionZones();
+    const zones = getAllAttentionZonesWithLisbon();
     
     let zonesList = '';
     for (const loc of locations) {
       const zone = zones[loc.id];
-      const display = zone?.display || 'Calculating...';
-      zonesList += `${loc.emoji} *${loc.name}*: ${display}\n`;
+      const lisbonTime = zone?.lisbonDisplay || 'Calculating...';
+      const localTime = zone?.display || 'Calculating...';
+      zonesList += `${loc.emoji} *${loc.name}*\n` +
+                   `   🇵🇹 Lisbon: *${lisbonTime}*\n` +
+                   `   📍 Local: ${localTime}\n\n`;
     }
     
     const message = 
-      `🎯 *Dynamic Attention Zones*\n\n` +
+      `🎯 *Attention Zones (Lisbon Time)*\n\n` +
       `_Based on last 7 days of historical data_\n` +
       `_When each market typically hits daily high_\n\n` +
       `━━━━━━━━━━━━━━━━━━━━━━\n\n` +
-      `${zonesList}\n` +
+      `${zonesList}` +
       `━━━━━━━━━━━━━━━━━━━━━━\n` +
       `_🚨 Alerts during these windows have special formatting_\n` +
-      `_⏰ Times shown in each market's local timezone_`;
+      `_⏰ Primary times shown in Lisbon (UTC+0)_`;
     
     bot.sendMessage(chatId, message, { parse_mode: 'Markdown' });
   });

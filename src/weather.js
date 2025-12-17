@@ -224,6 +224,51 @@ function getSustainedHighStats(locationId) {
 }
 
 /**
+ * Convert attention zone times to Lisbon timezone
+ * Returns formatted string like "1PM - 4PM"
+ */
+function convertZoneToLisbonTime(location, zone) {
+  if (!zone) return null;
+  
+  const formatHour = (h) => {
+    const period = h >= 12 ? 'PM' : 'AM';
+    const hour12 = h === 0 ? 12 : (h > 12 ? h - 12 : h);
+    return `${hour12}${period}`;
+  };
+  
+  // Create moment objects in the location's timezone
+  const today = moment().tz(location.timezone);
+  const startTime = today.clone().hour(zone.startHour).minute(zone.startMin).second(0);
+  const endTime = today.clone().hour(zone.endHour).minute(zone.endMin).second(0);
+  
+  // Convert to Lisbon time (Europe/Lisbon)
+  const startLisbon = startTime.clone().tz('Europe/Lisbon');
+  const endLisbon = endTime.clone().tz('Europe/Lisbon');
+  
+  return `${formatHour(startLisbon.hour())} - ${formatHour(endLisbon.hour())}`;
+}
+
+/**
+ * Get all attention zones with Lisbon time conversion
+ */
+export function getAllAttentionZonesWithLisbon() {
+  const zones = {};
+  for (const location of locations) {
+    const zone = attentionZones.get(location.id);
+    const localDisplay = getAttentionZoneInfo(location.id) || 'Calculating...';
+    const lisbonDisplay = zone ? convertZoneToLisbonTime(location, zone) : 'Calculating...';
+    
+    zones[location.id] = {
+      ...zone,
+      display: localDisplay,
+      lisbonDisplay: lisbonDisplay,
+      location: location
+    };
+  }
+  return zones;
+}
+
+/**
  * Get the current date string for a location in its timezone
  */
 function getLocalDate(timezone) {
