@@ -371,7 +371,7 @@ function getLocalDate(timezone) {
 /**
  * Get the current time string for a location in its timezone
  */
-function getLocalTime(timezone) {
+export function getLocalTime(timezone) {
   return moment().tz(timezone).format('h:mm A');
 }
 
@@ -379,7 +379,7 @@ function getLocalTime(timezone) {
  * Fetch weather data for a location
  * Handles timezone edge cases where local date might be "future" for the API
  */
-async function fetchWeatherData(location) {
+export async function fetchWeatherData(location) {
   const localDate = getLocalDate(location.timezone);
   const url = `${API_BASE_URL}?location=${location.apiPath}&date=${localDate}`;
   
@@ -460,7 +460,7 @@ async function fetchWeatherData(location) {
  * Extract current temperature from API response
  * Uses the most recent value between current.temperature and hourly_data
  */
-function extractCurrentTemp(apiResponse) {
+export function extractCurrentTemp(apiResponse) {
   // The API wraps everything in { success, data }
   const data = apiResponse?.data || apiResponse;
   

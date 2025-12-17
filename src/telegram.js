@@ -7,9 +7,16 @@ import TelegramBot from 'node-telegram-bot-api';
 import { TELEGRAM_BOT_TOKEN } from '../config/telegram.js';
 import { addUser, removeUser, loadUsers, getUser, toggleUserMarket, getUsersForMarket } from './state.js';
 import { locations } from '../config/locations.js';
-import { getAllAttentionZonesWithLisbon } from './weather.js';
+import { getAllAttentionZonesWithLisbon, fetchWeatherData, extractCurrentTemp, getLocalTime } from './weather.js';
 
 let bot = null;
+
+// Track active tracking sessions
+// Format: { chatId: { locationId: { messageId, lastTemp, lastUpdateTime } } }
+const activeTrackings = new Map();
+
+// Track intervals for cleanup
+const trackingIntervals = new Map();
 
 /**
  * Generate inline keyboard for market toggles
@@ -64,6 +71,8 @@ export function initBot() {
         `/markets - Enable/disable market alerts\n` +
         `/status - View current temperatures\n` +
         `/timezone - Peak hours in Lisbon time\n` +
+        `/track [city] - Track a market (updates every 10s)\n` +
+        `/untrackall - Stop all tracking\n` +
         `/stop - Unsubscribe from alerts`,
         { parse_mode: 'Markdown' }
       );
@@ -192,12 +201,107 @@ export function initBot() {
     bot.sendMessage(chatId, message, { parse_mode: 'Markdown' });
   });
   
+  // Handle /track command - start tracking a market
+  bot.onText(/\/track\s+(.+)/i, async (msg, match) => {
+    const chatId = msg.chat.id;
+    const cityName = match[1].trim();
+    
+    // Find location by name (case-insensitive, partial match)
+    const location = locations.find(loc => 
+      loc.name.toLowerCase().includes(cityName.toLowerCase()) ||
+      cityName.toLowerCase().includes(loc.name.toLowerCase())
+    );
+    
+    if (!location) {
+      const availableCities = locations.map(l => l.name).join(', ');
+      await bot.sendMessage(chatId, 
+        `❌ City "${cityName}" not found.\n\n` +
+        `Available cities: ${availableCities}\n\n` +
+        `Usage: /track London`
+      );
+      return;
+    }
+    
+    // Check if already tracking
+    if (!activeTrackings.has(chatId)) {
+      activeTrackings.set(chatId, new Map());
+    }
+    
+    const userTrackings = activeTrackings.get(chatId);
+    
+    if (userTrackings.has(location.id)) {
+      await bot.sendMessage(chatId, 
+        `⚠️ Already tracking ${location.emoji} ${location.name}.\n\n` +
+        `Use /untrack ${location.name} to stop.`
+      );
+      return;
+    }
+    
+    // Send initial tracking message
+    const initialMessage = await bot.sendMessage(chatId,
+      `🔍 *Tracking ${location.emoji} ${location.name}*\n\n` +
+      `⏳ Fetching initial data...\n` +
+      `_Last check: --_`,
+      { parse_mode: 'Markdown' }
+    );
+    
+    // Store tracking info
+    userTrackings.set(location.id, {
+      messageId: initialMessage.message_id,
+      lastTemp: null,
+      lastUpdateTime: null
+    });
+    
+    // Start tracking loop
+    startTracking(chatId, location.id, location);
+    
+    console.log(`🔍 User ${chatId} started tracking ${location.name}`);
+  });
+  
+  // Handle /untrack command - stop tracking a market
+  bot.onText(/\/untrack\s+(.+)/i, async (msg, match) => {
+    const chatId = msg.chat.id;
+    const cityName = match[1].trim();
+    
+    const location = locations.find(loc => 
+      loc.name.toLowerCase().includes(cityName.toLowerCase()) ||
+      cityName.toLowerCase().includes(loc.name.toLowerCase())
+    );
+    
+    if (!location) {
+      await bot.sendMessage(chatId, `❌ City "${cityName}" not found.`);
+      return;
+    }
+    
+    stopTracking(chatId, location.id);
+    await bot.sendMessage(chatId, 
+      `✅ Stopped tracking ${location.emoji} ${location.name}.`
+    );
+  });
+  
+  // Handle /untrackall command - stop all tracking
+  bot.onText(/\/untrackall/, async (msg) => {
+    const chatId = msg.chat.id;
+    
+    if (activeTrackings.has(chatId)) {
+      const userTrackings = activeTrackings.get(chatId);
+      for (const locationId of userTrackings.keys()) {
+        stopTracking(chatId, locationId);
+      }
+      activeTrackings.delete(chatId);
+    }
+    
+    await bot.sendMessage(chatId, `✅ Stopped tracking all markets.`);
+  });
+  
   // Set up the bot command menu (blue button)
   bot.setMyCommands([
     { command: 'start', description: '🚀 Subscribe to weather alerts' },
     { command: 'markets', description: '🌍 Enable/disable market notifications' },
     { command: 'status', description: '🌡️ View current temperatures' },
     { command: 'timezone', description: '🕐 Peak hours in Lisbon time' },
+    { command: 'track', description: '🔍 Track a market (updates every 10s)' },
+    { command: 'untrackall', description: '🛑 Stop all tracking' },
     { command: 'stop', description: '🛑 Unsubscribe from alerts' }
   ]).then(() => {
     console.log('📋 Bot command menu set up');
@@ -207,6 +311,158 @@ export function initBot() {
   
   console.log('🤖 Telegram bot initialized and listening...');
   return bot;
+}
+
+/**
+ * Start tracking a location for a user
+ */
+function startTracking(chatId, locationId, location) {
+  const intervalKey = `${chatId}_${locationId}`;
+  
+  // Clear any existing interval
+  if (trackingIntervals.has(intervalKey)) {
+    clearInterval(trackingIntervals.get(intervalKey));
+  }
+  
+  // Create tracking interval (every 10 seconds)
+  const interval = setInterval(async () => {
+    try {
+      // Check if tracking is still active
+      if (!activeTrackings.has(chatId)) {
+        clearInterval(interval);
+        trackingIntervals.delete(intervalKey);
+        return;
+      }
+      
+      const userTrackings = activeTrackings.get(chatId);
+      if (!userTrackings || !userTrackings.has(locationId)) {
+        clearInterval(interval);
+        trackingIntervals.delete(intervalKey);
+        return;
+      }
+      
+      const tracking = userTrackings.get(locationId);
+      
+      // Fetch current data
+      const result = await fetchWeatherData(location);
+      
+      if (!result.success) {
+        // Update message with error
+        const errorTime = new Date().toLocaleTimeString();
+        try {
+          await bot.editMessageText(
+            `🔍 *Tracking ${location.emoji} ${location.name}*\n\n` +
+            `❌ Error fetching data\n` +
+            `_Last check: ${errorTime}_`,
+            {
+              chat_id: chatId,
+              message_id: tracking.messageId,
+              parse_mode: 'Markdown'
+            }
+          );
+        } catch (err) {
+          // Message might be deleted, stop tracking
+          stopTracking(chatId, locationId);
+        }
+        return;
+      }
+      
+      const currentTemp = extractCurrentTemp(result.data);
+      const localTime = getLocalTime(location.timezone);
+      const checkTime = new Date().toLocaleTimeString();
+      
+      if (currentTemp === null) {
+        // Update message with no data
+        try {
+          await bot.editMessageText(
+            `🔍 *Tracking ${location.emoji} ${location.name}*\n\n` +
+            `⚠️ Could not extract temperature\n` +
+            `_Last check: ${checkTime}_`,
+            {
+              chat_id: chatId,
+              message_id: tracking.messageId,
+              parse_mode: 'Markdown'
+            }
+          );
+        } catch (err) {
+          stopTracking(chatId, locationId);
+        }
+        return;
+      }
+      
+      // Check if temperature changed
+      const tempChanged = tracking.lastTemp !== null && tracking.lastTemp !== currentTemp;
+      
+      // Update the tracking message with latest check
+      try {
+        await bot.editMessageText(
+          `🔍 *Tracking ${location.emoji} ${location.name}*\n\n` +
+          `🌡️ Temperature: *${currentTemp}°C*\n` +
+          `🕐 Local time: ${localTime}\n` +
+          `_Last check: ${checkTime}_`,
+          {
+            chat_id: chatId,
+            message_id: tracking.messageId,
+            parse_mode: 'Markdown'
+          }
+        );
+      } catch (err) {
+        // Message might be deleted, stop tracking
+        stopTracking(chatId, locationId);
+        return;
+      }
+      
+      // If temperature changed, send a NEW message
+      if (tempChanged) {
+        const change = currentTemp > tracking.lastTemp ? '↑' : '↓';
+        const changeAmount = Math.abs(currentTemp - tracking.lastTemp);
+        
+        await bot.sendMessage(chatId,
+          `📊 *NEW DATA POINT*\n\n` +
+          `${location.emoji} *${location.name}*\n\n` +
+          `🌡️ Temperature: *${currentTemp}°C* ${change}${changeAmount}°C\n` +
+          `📊 Previous: ${tracking.lastTemp}°C\n` +
+          `🕐 ${localTime}\n` +
+          `🕐 Checked: ${checkTime}`,
+          { parse_mode: 'Markdown' }
+        );
+        
+        console.log(`📊 ${location.name} temp changed: ${tracking.lastTemp}°C → ${currentTemp}°C`);
+      }
+      
+      // Update tracking state
+      tracking.lastTemp = currentTemp;
+      tracking.lastUpdateTime = new Date();
+      
+    } catch (err) {
+      console.error(`Error in tracking loop for ${location.name}:`, err.message);
+    }
+  }, 10000); // 10 seconds
+  
+  trackingIntervals.set(intervalKey, interval);
+}
+
+/**
+ * Stop tracking a location for a user
+ */
+function stopTracking(chatId, locationId) {
+  const intervalKey = `${chatId}_${locationId}`;
+  
+  if (trackingIntervals.has(intervalKey)) {
+    clearInterval(trackingIntervals.get(intervalKey));
+    trackingIntervals.delete(intervalKey);
+  }
+  
+  if (activeTrackings.has(chatId)) {
+    const userTrackings = activeTrackings.get(chatId);
+    userTrackings.delete(locationId);
+    
+    if (userTrackings.size === 0) {
+      activeTrackings.delete(chatId);
+    }
+  }
+  
+  console.log(`🛑 Stopped tracking ${locationId} for user ${chatId}`);
 }
 
 /**
