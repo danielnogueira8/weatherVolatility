@@ -9,9 +9,12 @@ import 'dotenv/config';
 import { initBot } from './telegram.js';
 import { initWeatherService } from './weather.js';
 
+const VERSION = 'v2.0.0-no-tg-logs';
+
 console.log(`
 ╔═══════════════════════════════════════════════════════╗
 ║         🌡️  WEATHER VOLATILITY ALERTS  🌡️             ║
+║                    ${VERSION}                       ║
 ╠═══════════════════════════════════════════════════════╣
 ║  Monitoring: Atlanta, Seattle, NYC, London,           ║
 ║              Seoul, Toronto, Dallas                   ║
