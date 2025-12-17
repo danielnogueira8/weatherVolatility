@@ -29,7 +29,7 @@ export const locations = [
     id: 'london',
     name: 'London',
     emoji: '🇬🇧',
-    apiPath: 'gb/london/EGLL',
+    apiPath: 'gb/london/EGLC',
     timezone: 'Europe/London'
   },
   {
