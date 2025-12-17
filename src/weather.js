@@ -458,23 +458,31 @@ async function fetchWeatherData(location) {
 
 /**
  * Extract current temperature from API response
- * PRIORITY: Use most recent hourly_data entry (more up-to-date than 'current' which may be cached)
+ * Uses the most recent value between current.temperature and hourly_data
  */
 function extractCurrentTemp(apiResponse) {
   // The API wraps everything in { success, data }
   const data = apiResponse?.data || apiResponse;
   
-  // PRIMARY: Use the most recent hourly_data entry (more reliable/recent than 'current')
+  const currentTemp = data?.current?.temperature?.celsius;
+  let hourlyTemp = null;
+  
+  // Get the most recent hourly_data entry
   if (data?.hourly_data && Array.isArray(data.hourly_data) && data.hourly_data.length > 0) {
     const latest = data.hourly_data[data.hourly_data.length - 1];
     if (typeof latest?.temperature_c === 'number') {
-      return latest.temperature_c;
+      hourlyTemp = latest.temperature_c;
     }
   }
   
-  // Fallback: data.current.temperature.celsius (may be cached/stale)
-  if (typeof data?.current?.temperature?.celsius === 'number') {
-    return data.current.temperature.celsius;
+  // Prefer current.temperature if available (usually more recent)
+  // Otherwise use hourly_data
+  if (typeof currentTemp === 'number') {
+    return currentTemp;
+  }
+  
+  if (hourlyTemp !== null) {
+    return hourlyTemp;
   }
   
   // Other fallbacks
@@ -527,11 +535,15 @@ async function processLocation(location) {
     return null;
   }
   
-  // Use the API date for state management, but actual local date for display
-  const apiDate = result.localDate;
+  // Use actual local date for state management (not API fallback date)
+  // This ensures we track today's state even if API hasn't updated yet
   const actualLocalDate = getLocalDate(location.timezone);
+  const apiDate = result.localDate;
   const localTime = getLocalTime(location.timezone);
-  const state = loadLocationState(location.id, apiDate);
+  
+  // Always use actual local date for state (today's date)
+  // This ensures we detect new highs/drops on the current day
+  const state = loadLocationState(location.id, actualLocalDate);
   
   // Determine the high to display:
   // - If we have a tracked high, use the MAX of (our tracked high, current temp)
@@ -558,7 +570,7 @@ async function processLocation(location) {
     state.lastTemp = currentTemp;
     state.hasAlertedDrop = false;
     state.history.push({ temp: currentTemp, time: localTime });
-    saveLocationState(location.id, apiDate, state);
+    saveLocationState(location.id, actualLocalDate, state);
     
     debugLog(`   📊 BASELINE: ${currentTemp}°C`);
     return null;
@@ -588,6 +600,7 @@ async function processLocation(location) {
       date: actualLocalDate
     });
     
+    console.log(`   🚨🚨🚨 ALERT DETECTED: ${location.name} NEW HIGH ${currentTemp}°C (was ${prevHigh}°C)`);
     debugLog(`   🚨 NEW HIGH ${currentTemp}°C (was ${prevHigh}°C)`);
   }
   // Check for first drop from high
@@ -604,6 +617,7 @@ async function processLocation(location) {
       date: actualLocalDate
     });
     
+    console.log(`   🚨🚨🚨 ALERT DETECTED: ${location.name} DROP to ${currentTemp}°C (high ${state.highTemp}°C)`);
     debugLog(`   🚨 DROP to ${currentTemp}°C (high ${state.highTemp}°C)`);
   }
   // Check for sustained high during attention zone (temp equals current high)
@@ -631,10 +645,10 @@ async function processLocation(location) {
     debugLog(`   ✓ No alert`);
   }
   
-  // Update state
+  // Update state (always use actual local date)
   state.lastTemp = currentTemp;
   state.history.push({ temp: currentTemp, time: localTime });
-  saveLocationState(location.id, apiDate, state);
+  saveLocationState(location.id, actualLocalDate, state);
   
   return alerts.length > 0 ? alerts : null;
 }
@@ -785,12 +799,21 @@ export async function pollAllLocations() {
   }
   
   // Send alerts to users who have each market enabled
-  for (const alert of allAlerts) {
-    const message = formatAlert(alert);
-    if (message) {
-      const sentCount = await broadcastMessage(message, alert.location.id);
-      debugLog(`📤 ${alert.location.name} alert → ${sentCount} user(s)`);
+  if (allAlerts.length > 0) {
+    console.log(`\n🚨 SENDING ${allAlerts.length} ALERT(S) TO TELEGRAM:`);
+    for (const alert of allAlerts) {
+      const message = formatAlert(alert);
+      if (message) {
+        console.log(`   📤 Broadcasting ${alert.type} alert for ${alert.location.name}...`);
+        const sentCount = await broadcastMessage(message, alert.location.id);
+        console.log(`   ✅ Sent to ${sentCount} user(s)`);
+        debugLog(`📤 ${alert.location.name} alert → ${sentCount} user(s)`);
+      } else {
+        console.log(`   ⚠️ Empty message for ${alert.location.name} alert`);
+      }
     }
+  } else {
+    debugLog(`✅ No alerts to send.`);
   }
   
   debugLog(`✅ Done. ${allAlerts.length} alert(s).`);
