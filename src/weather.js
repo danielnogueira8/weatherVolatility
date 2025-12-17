@@ -310,7 +310,7 @@ export function getAllAttentionZones() {
 /**
  * Get sustained high stats for a location
  */
-function getSustainedHighStats(locationId) {
+export function getSustainedHighStats(locationId) {
   return sustainedHighStats.get(locationId) || { avgSustainedCount: 4, data: [] };
 }
 
@@ -348,12 +348,14 @@ export function getAllAttentionZonesWithLisbon() {
     const zone = attentionZones.get(location.id);
     const localDisplay = getAttentionZoneInfo(location.id) || 'Calculating...';
     const lisbonDisplay = zone ? convertZoneToLisbonTime(location, zone) : 'Calculating...';
+    const stats = getSustainedHighStats(location.id);
     
     zones[location.id] = {
       ...zone,
       display: localDisplay,
       lisbonDisplay: lisbonDisplay,
-      location: location
+      location: location,
+      avgSustainedCount: stats.avgSustainedCount
     };
   }
   return zones;

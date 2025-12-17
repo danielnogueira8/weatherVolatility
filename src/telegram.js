@@ -171,9 +171,11 @@ export function initBot() {
       const zone = zones[loc.id];
       const lisbonTime = zone?.lisbonDisplay || 'Calculating...';
       const localTime = zone?.display || 'Calculating...';
+      const avgSustained = zone?.avgSustainedCount || 'N/A';
       zonesList += `${loc.emoji} *${loc.name}*\n` +
                    `   🇵🇹 Lisbon: *${lisbonTime}*\n` +
-                   `   📍 Local: ${localTime}\n\n`;
+                   `   📍 Local: ${localTime}\n` +
+                   `   📊 Avg sustained: *${avgSustained} readings*\n\n`;
     }
     
     const message = 
@@ -184,6 +186,7 @@ export function initBot() {
       `${zonesList}` +
       `━━━━━━━━━━━━━━━━━━━━━━\n` +
       `_🚨 Alerts during these windows have special formatting_\n` +
+      `_📊 Avg sustained = avg consecutive readings at ATH before drop_\n` +
       `_⏰ Primary times shown in Lisbon (UTC+0)_`;
     
     bot.sendMessage(chatId, message, { parse_mode: 'Markdown' });
