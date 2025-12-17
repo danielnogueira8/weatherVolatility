@@ -16,6 +16,10 @@ const currentReadings = new Map();
 // Format: { locationId: { startHour: 13, startMin: 0, endHour: 16, endMin: 0 } }
 const attentionZones = new Map();
 
+// Store for average sustained high counts per location (from historical data)
+// Format: { locationId: { avgSustainedCount: 5, data: [3, 5, 7, 4, 6, 5, 5] } }
+const sustainedHighStats = new Map();
+
 /**
  * Log to console only
  */
@@ -78,13 +82,43 @@ function findHighTempTime(hourlyData) {
 }
 
 /**
+ * Count how many consecutive readings stayed at the daily high before dropping
+ * Returns the count of sustained high readings
+ */
+function countSustainedHighReadings(hourlyData) {
+  if (!hourlyData || hourlyData.length === 0) return 0;
+  
+  // Find the max temperature
+  const maxTemp = Math.max(...hourlyData.map(h => h.temperature_c));
+  
+  // Find the first occurrence of max temp
+  let firstMaxIndex = hourlyData.findIndex(h => h.temperature_c === maxTemp);
+  if (firstMaxIndex === -1) return 0;
+  
+  // Count consecutive readings at max temp
+  let sustainedCount = 0;
+  for (let i = firstMaxIndex; i < hourlyData.length; i++) {
+    if (hourlyData[i].temperature_c === maxTemp) {
+      sustainedCount++;
+    } else if (hourlyData[i].temperature_c < maxTemp) {
+      // Temperature dropped, stop counting
+      break;
+    }
+  }
+  
+  return sustainedCount;
+}
+
+/**
  * Calculate the attention zone for a location based on last 7 days
+ * Also calculates average sustained high count
  * Returns a 3-hour window centered around the most common high time
  */
 async function calculateAttentionZone(location) {
   debugLog(`\n📊 Calculating attention zone for ${location.name}...`);
   
   const highTimes = [];
+  const sustainedCounts = [];
   const today = moment().tz(location.timezone);
   
   // Fetch last 7 days of data
@@ -94,9 +128,12 @@ async function calculateAttentionZone(location) {
     
     if (data?.data?.hourly_data) {
       const highHour = findHighTempTime(data.data.hourly_data);
+      const sustainedCount = countSustainedHighReadings(data.data.hourly_data);
+      
       if (highHour !== null) {
         highTimes.push(highHour);
-        debugLog(`   ${date}: High at ${highHour}:00`);
+        sustainedCounts.push(sustainedCount);
+        debugLog(`   ${date}: High at ${highHour}:00, sustained for ${sustainedCount} readings`);
       }
     }
     
@@ -106,11 +143,23 @@ async function calculateAttentionZone(location) {
   
   if (highTimes.length === 0) {
     debugLog(`   ⚠️ No historical data, using default 1PM-4PM`);
+    sustainedHighStats.set(location.id, { avgSustainedCount: 4, data: [] });
     return { startHour: 13, startMin: 0, endHour: 16, endMin: 0 };
   }
   
   // Calculate the average hour when highs occur
   const avgHour = Math.round(highTimes.reduce((a, b) => a + b, 0) / highTimes.length);
+  
+  // Calculate the average sustained high count
+  const avgSustained = sustainedCounts.length > 0 
+    ? Math.round(sustainedCounts.reduce((a, b) => a + b, 0) / sustainedCounts.length)
+    : 4;
+  
+  // Store sustained high stats
+  sustainedHighStats.set(location.id, { 
+    avgSustainedCount: avgSustained, 
+    data: sustainedCounts 
+  });
   
   // Create a 3-hour window centered around the average
   // But shift slightly earlier since highs tend to occur mid-window
@@ -118,6 +167,7 @@ async function calculateAttentionZone(location) {
   const endHour = Math.min(23, avgHour + 2);
   
   debugLog(`   ✅ Attention zone: ${startHour}:00 - ${endHour}:00 (avg high at ${avgHour}:00)`);
+  debugLog(`   📈 Avg sustained readings at high: ${avgSustained}`);
   
   return { startHour, startMin: 0, endHour, endMin: 0 };
 }
@@ -164,6 +214,13 @@ export function getAllAttentionZones() {
     };
   }
   return zones;
+}
+
+/**
+ * Get sustained high stats for a location
+ */
+function getSustainedHighStats(locationId) {
+  return sustainedHighStats.get(locationId) || { avgSustainedCount: 4, data: [] };
 }
 
 /**
@@ -537,13 +594,26 @@ function formatAlert(alert) {
   // Sustained high during attention zone
   if (alert.type === 'sustained_high') {
     const ordinal = alert.count === 2 ? '2nd' : alert.count === 3 ? '3rd' : `${alert.count}th`;
+    const stats = getSustainedHighStats(location.id);
+    const avgCount = stats.avgSustainedCount;
+    
+    // Determine if we're below, at, or above average
+    let comparison = '';
+    if (alert.count < avgCount) {
+      comparison = `📉 Below avg (usually ${avgCount} readings)`;
+    } else if (alert.count === avgCount) {
+      comparison = `📊 At avg (usually ${avgCount} readings)`;
+    } else {
+      comparison = `📈 Above avg! (usually ${avgCount} readings)`;
+    }
+    
     return (
       `🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥\n` +
       `🎯 *HIGH HOLDING STRONG* 🎯\n` +
       `🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥\n\n` +
       `${location.emoji} *${location.name}*\n\n` +
       `🌡️ *${temp}°C* — ${ordinal} reading at peak\n` +
-      `📊 Sustained high during attention zone\n` +
+      `${comparison}\n` +
       `🕐 ${time} (${dateFormatted})\n\n` +
       `━━━━━━━━━━━━━━━━━━━━━━\n` +
       `⏰ *PEAK WINDOW: ${zoneInfo}*\n` +
