@@ -328,7 +328,7 @@ function startTracking(chatId, locationId, location) {
   // Create tracking interval (every 10 seconds)
   const interval = setInterval(async () => {
     try {
-      // Check if tracking is still active
+      // Check if tracking is still active (only stop if explicitly untracked)
       if (!activeTrackings.has(chatId)) {
         clearInterval(interval);
         trackingIntervals.delete(intervalKey);
@@ -344,16 +344,37 @@ function startTracking(chatId, locationId, location) {
       
       const tracking = userTrackings.get(locationId);
       
-      // Fetch latest data using /latest endpoint (more accurate for real-time)
-      const result = await fetchLatestWeatherData(location);
+      // Retry logic for API calls
+      let result = null;
+      let retries = 3;
+      let lastError = null;
       
-      if (!result.success) {
-        // Update message with error
+      while (retries > 0) {
+        try {
+          result = await fetchLatestWeatherData(location);
+          if (result.success) {
+            break;
+          }
+          lastError = result.error;
+        } catch (err) {
+          lastError = err.message;
+        }
+        
+        retries--;
+        if (retries > 0) {
+          // Exponential backoff: wait 2s, 4s, 8s
+          const waitTime = Math.pow(2, 3 - retries) * 1000;
+          await new Promise(resolve => setTimeout(resolve, waitTime));
+        }
+      }
+      
+      // If all retries failed, show error but continue tracking
+      if (!result || !result.success) {
         const errorTime = new Date().toLocaleTimeString();
         try {
           await bot.editMessageText(
             `🔍 *Tracking ${location.emoji} ${location.name}*\n\n` +
-            `❌ Error fetching data\n` +
+            `⚠️ Error fetching data (retrying...)\n` +
             `_Last check: ${errorTime}_`,
             {
               chat_id: chatId,
@@ -362,10 +383,15 @@ function startTracking(chatId, locationId, location) {
             }
           );
         } catch (err) {
-          // Message might be deleted, stop tracking
-          stopTracking(chatId, locationId);
+          // Only stop if message is actually deleted (error 400 Bad Request: message to edit not found)
+          if (err.response?.statusCode === 400 || err.response?.body?.error_code === 400) {
+            console.log(`   🛑 Message deleted, stopping tracking for ${location.name}`);
+            stopTracking(chatId, locationId);
+            return;
+          }
+          // Otherwise, continue tracking (might be rate limit or other transient error)
         }
-        return;
+        return; // Continue to next interval
       }
       
       const currentTemp = extractCurrentTemp(result.data);
@@ -386,12 +412,12 @@ function startTracking(chatId, locationId, location) {
       
       console.log(`   🔍 ${location.name} tracking: API current=${apiCurrent}°C, extracted=${currentTemp}°C, timestamp=${timestamp}`);
       
+      // If temperature extraction failed, show warning but continue tracking
       if (currentTemp === null) {
-        // Update message with no data
         try {
           await bot.editMessageText(
             `🔍 *Tracking ${location.emoji} ${location.name}*\n\n` +
-            `⚠️ Could not extract temperature\n` +
+            `⚠️ Could not extract temperature (retrying...)\n` +
             `_Last check: ${checkTime}_`,
             {
               chat_id: chatId,
@@ -400,9 +426,14 @@ function startTracking(chatId, locationId, location) {
             }
           );
         } catch (err) {
-          stopTracking(chatId, locationId);
+          // Only stop if message is deleted
+          if (err.response?.statusCode === 400 || err.response?.body?.error_code === 400) {
+            console.log(`   🛑 Message deleted, stopping tracking for ${location.name}`);
+            stopTracking(chatId, locationId);
+            return;
+          }
         }
-        return;
+        return; // Continue to next interval
       }
       
       // Check if temperature changed
@@ -427,9 +458,15 @@ function startTracking(chatId, locationId, location) {
           }
         );
       } catch (err) {
-        // Message might be deleted, stop tracking
-        stopTracking(chatId, locationId);
-        return;
+        // Only stop if message is actually deleted
+        if (err.response?.statusCode === 400 || err.response?.body?.error_code === 400) {
+          console.log(`   🛑 Message deleted, stopping tracking for ${location.name}`);
+          stopTracking(chatId, locationId);
+          return;
+        }
+        // Otherwise, continue tracking (might be rate limit or other transient error)
+        console.log(`   ⚠️ Error updating message (continuing): ${err.message}`);
+        return; // Continue to next interval
       }
       
       // If temperature changed, send a NEW message
@@ -441,18 +478,23 @@ function startTracking(chatId, locationId, location) {
           ? `📅 Last recorded: ${lastRecordedTime}\n` 
           : '';
         
-        await bot.sendMessage(chatId,
-          `📊 *NEW DATA POINT*\n\n` +
-          `${location.emoji} *${location.name}*\n\n` +
-          `🌡️ Temperature: *${currentTemp}°C* ${change}${changeAmount}°C\n` +
-          `📊 Previous: ${tracking.lastTemp}°C\n` +
-          `${lastRecordedLine}` +
-          `🕐 ${localTime}\n` +
-          `🕐 Checked: ${checkTime}`,
-          { parse_mode: 'Markdown' }
-        );
-        
-        console.log(`📊 ${location.name} temp changed: ${tracking.lastTemp}°C → ${currentTemp}°C`);
+        try {
+          await bot.sendMessage(chatId,
+            `📊 *NEW DATA POINT*\n\n` +
+            `${location.emoji} *${location.name}*\n\n` +
+            `🌡️ Temperature: *${currentTemp}°C* ${change}${changeAmount}°C\n` +
+            `📊 Previous: ${tracking.lastTemp}°C\n` +
+            `${lastRecordedLine}` +
+            `🕐 ${localTime}\n` +
+            `🕐 Checked: ${checkTime}`,
+            { parse_mode: 'Markdown' }
+          );
+          
+          console.log(`📊 ${location.name} temp changed: ${tracking.lastTemp}°C → ${currentTemp}°C`);
+        } catch (err) {
+          // Don't stop tracking if sending new message fails
+          console.log(`   ⚠️ Error sending new data point message (continuing): ${err.message}`);
+        }
       }
       
       // Update tracking state
@@ -460,7 +502,9 @@ function startTracking(chatId, locationId, location) {
       tracking.lastUpdateTime = new Date();
       
     } catch (err) {
+      // Don't stop tracking on unexpected errors, just log and continue
       console.error(`Error in tracking loop for ${location.name}:`, err.message);
+      // Continue to next interval
     }
   }, 10000); // 10 seconds
   
